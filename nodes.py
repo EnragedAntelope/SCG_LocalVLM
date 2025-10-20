@@ -47,9 +47,9 @@ class Qwen2VL:
                         "Qwen2.5-VL-3B-Instruct",
                         "Qwen2.5-VL-7B-Instruct",
                         "Qwen3-VL-4B-Thinking",
-                        "Qwen3-VL-4B-Instruct"
+                        "Qwen3-VL-4B-Instruct",
                         "Qwen3-VL-8B-Thinking",
-                        "Qwen3-VL-8B-Instruct"
+                        "Qwen3-VL-8B-Instruct",
                         "SkyCaptioner-V1",
                     ],
                     {"default": "Qwen3-VL-4B-Instruct"},
