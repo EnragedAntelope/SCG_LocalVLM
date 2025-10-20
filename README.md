@@ -1,38 +1,50 @@
+# ComfyUI Qwen VL Nodes
 
-# ComfyUI Qwen2.5VL and Qwen2.5 wrapper
-## Update
-Qwen2VL node is renamed to Qwen2.5VL due to the release of new Qwen models
+This repository provides ComfyUI nodes that wrap the latest vision-language and language-only checkpoints from the Qwen family. Both **Qwen3 VL** and **Qwen2.5 VL** models are supported for multimodal reasoning, alongside text-only Qwen2.5 models for prompt generation.
 
+## What's New
 
-## Sample workflow
-You can find a sample [workflow](workflow/Qwen2VL.json) here.
+- Added support for the Qwen3 VL family (`Qwen3-VL-4B-Thinking`, `Qwen3-VL-8B-Thinking`, etc.).
+- Retained compatibility with existing Qwen2.5 VL models.
+- Text-only workflows continue to use the Qwen2.5 instruct checkpoints.
 
-![alt text](workflow/comfy_workflow.png)
+## Sample Workflows
 
-Additionally, you can use Qwen2.5 for text generation
-![alt text](workflow/comfy_workflow2.png)
+- Multimodal workflow example: [`workflow/Qwen2VL.json`](workflow/Qwen2VL.json)
+- Text generation workflow example: [`workflow/qwen25.json`](workflow/qwen25.json)
 
-A sample [workflow](workflow/qwen25.json) using both nodes
+![Qwen VL workflow](workflow/comfy_workflow.png)
+![Qwen text workflow](workflow/comfy_workflow2.png)
 
 ## Installation
-Install from ComfyUI Manager, search for `Qwen2-VL wrapper for ComfyUI`
 
-To install ComfyUI_QwenVL in `ComfyUI\custom_nodes\`, follow these steps:
+You can install through ComfyUI Manager (search for `Qwen-VL wrapper for ComfyUI`) or manually:
 
-1. *Clone the repository*:
-    ```bash
-    git clone https://github.com/alexcong/ComfyUI_QwenVL.git
-    ```
+1. Clone the repository:
 
-2. *Navigate to the cloned directory*:
-    ```bash
-    cd ComfyUI_QwenVL
-    ```
+   ```bash
+   git clone https://github.com/alexcong/ComfyUI_QwenVL.git
+   ```
 
-3. *Install the required dependencies*:
-    ```bash
-    pip install -r requirements.txt
-    ```
+2. Change into the project directory:
 
-## Qwen2-VL models location
-Models will be downloaded to `ComfyUI\models\LLM\`
+   ```bash
+   cd ComfyUI_QwenVL
+   ```
+
+3. Install dependencies (ensure you are inside your ComfyUI virtual environment if you use one):
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Supported Nodes
+
+- **Qwen2VL node** – Multimodal generation with Qwen3 VL and Qwen2.5 VL checkpoints. Accepts images or videos as optional inputs alongside text prompts.
+- **Qwen2 node** – Text-only generation backed by Qwen2.5 instruct models, with optional quantization for lower memory usage.
+
+Both nodes expose parameters for temperature, maximum token count, quantization (none/4-bit/8-bit), and manual seeding. Set `keep_model_loaded` to `True` to cache models between runs.
+
+## Model Storage
+
+Downloaded models are stored under `ComfyUI/models/LLM/`.
