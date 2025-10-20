@@ -24,7 +24,7 @@ def tensor_to_pil(image_tensor, batch_index=0) -> Image:
     return img
 
 
-class Qwen2VL:
+class QwenVL:
     def __init__(self):
         self.model_checkpoint = None
         self.processor = None
@@ -94,9 +94,7 @@ class Qwen2VL:
         if seed != -1:
             torch.manual_seed(seed)
 
-        if model.startswith("Qwen3"):
-            model_id = f"Qwen/{model}"
-        elif model.startswith("Qwen2"):
+        if model.startswith("Qwen"):
             model_id = f"qwen/{model}"
         else:
             model_id = f"Skywork/{model}"
@@ -241,7 +239,7 @@ class Qwen2VL:
             return result
 
 
-class Qwen2:
+class Qwen:
     def __init__(self):
         self.model_checkpoint = None
         self.tokenizer = None
