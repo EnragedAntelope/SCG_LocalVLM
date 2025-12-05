@@ -420,11 +420,17 @@ class QwenVL:
                 print(f"[SCG_LocalVLM] Loading with 8-bit quantization (device_map: {device_map})")
                 
             else:
-                # For non-quantized models: DON'T use device_map to avoid Accelerate overhead
-                # This is the key fix for Flash Attention being slower than Eager
+                # For non-quantized models on single GPU: use direct device placement
+                # This ensures all model components are properly placed on GPU
                 load_kwargs["torch_dtype"] = compute_dtype
-                # Don't set device_map - we'll move to GPU manually after loading
-                print("[SCG_LocalVLM] Loading without quantization (full precision, direct GPU load)")
+                if torch.cuda.device_count() == 1:
+                    # Single GPU: use explicit device placement (faster than 'auto')
+                    load_kwargs["device_map"] = {"":  "cuda:0"}
+                    print("[SCG_LocalVLM] Loading without quantization (device_map: cuda:0)")
+                else:
+                    # Multi GPU: let accelerate handle it
+                    load_kwargs["device_map"] = "auto"
+                    print("[SCG_LocalVLM] Loading without quantization (device_map: auto)")
 
             # Handle attention mode selection
             attention_used = "default (auto)"
@@ -468,11 +474,6 @@ class QwenVL:
                     )
                 
                 load_time = time.time() - load_start
-                
-                # For non-quantized models, move to GPU explicitly (avoids Accelerate overhead)
-                if quantization == "none":
-                    self.model = self.model.to(self.device)
-                    print(f"[SCG_LocalVLM]   Moved to device: {self.device}")
                 
                 # Set model to eval mode for inference
                 self.model.eval()
@@ -589,13 +590,27 @@ class QwenVL:
                 )
                 print("deal messages", messages)
                 image_inputs, video_inputs = process_vision_info(messages)
+                
+                # Process inputs on CPU first
                 inputs = self.processor(
                     text=[text],
                     images=image_inputs,
                     videos=video_inputs,
                     padding=True,
                     return_tensors="pt",
-                ).to(self.model.device)
+                )
+                
+                # Move to GPU with optimal memory layout
+                # Ensure all tensors are contiguous for optimal performance
+                device = self.model.device
+                inputs = {
+                    k: v.to(device=device, non_blocking=True).contiguous() 
+                    if isinstance(v, torch.Tensor) else v 
+                    for k, v in inputs.items()
+                }
+                # Ensure CUDA operations are complete before generation
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
 
                 # Build generation kwargs with optimal settings
                 generation_kwargs = {
@@ -878,10 +893,14 @@ class Qwen:
                 print(f"[SCG_LocalVLM] Loading with 8-bit quantization (device_map: {device_map})")
                 
             else:
-                # For non-quantized models: DON'T use device_map to avoid Accelerate overhead
+                # For non-quantized models on single GPU: use direct device placement
                 load_kwargs["torch_dtype"] = compute_dtype
-                # Don't set device_map - we'll move to GPU manually after loading
-                print("[SCG_LocalVLM] Loading without quantization (full precision, direct GPU load)")
+                if torch.cuda.device_count() == 1:
+                    load_kwargs["device_map"] = {"":  "cuda:0"}
+                    print("[SCG_LocalVLM] Loading without quantization (device_map: cuda:0)")
+                else:
+                    load_kwargs["device_map"] = "auto"
+                    print("[SCG_LocalVLM] Loading without quantization (device_map: auto)")
 
             # Handle attention mode selection
             attention_used = "default (auto)"
@@ -918,11 +937,6 @@ class Qwen:
                 )
                 
                 load_time = time.time() - load_start
-                
-                # For non-quantized models, move to GPU explicitly (avoids Accelerate overhead)
-                if quantization == "none":
-                    self.model = self.model.to(self.device)
-                    print(f"[SCG_LocalVLM]   Moved to device: {self.device}")
                 
                 # Set model to eval mode for inference
                 self.model.eval()
