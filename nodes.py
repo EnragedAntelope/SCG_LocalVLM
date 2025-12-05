@@ -17,6 +17,7 @@ import numpy as np
 import folder_paths
 import subprocess
 import uuid
+import time  # Import at module level for timing
 
 try:
     import comfy.model_management as comfy_mm
@@ -369,7 +370,6 @@ class QwenVL:
             )
 
         if self.model is None:
-            import time
             load_start = time.time()
             
             # Check quantization support if using quantization
@@ -474,12 +474,9 @@ class QwenVL:
                     self.model = self.model.to(self.device)
                     print(f"[SCG_LocalVLM]   Moved to device: {self.device}")
                 
-                # Try torch.compile for additional speed (PyTorch 2.0+)
-                try:
-                    self.model = torch.compile(self.model, mode="reduce-overhead")
-                    print("[SCG_LocalVLM]   torch.compile: enabled (reduce-overhead mode)")
-                except Exception as compile_err:
-                    print(f"[SCG_LocalVLM]   torch.compile: skipped ({type(compile_err).__name__})")
+                # Set model to eval mode for inference
+                self.model.eval()
+                print("[SCG_LocalVLM]   Model set to eval mode")
                 
                 # Print comprehensive model info
                 print(f"[SCG_LocalVLM] Model loaded successfully in {load_time:.2f}s")
@@ -831,7 +828,6 @@ class Qwen:
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
 
         if self.model is None:
-            import time
             load_start = time.time()
             
             # Check quantization support if using quantization
@@ -928,12 +924,9 @@ class Qwen:
                     self.model = self.model.to(self.device)
                     print(f"[SCG_LocalVLM]   Moved to device: {self.device}")
                 
-                # Try torch.compile for additional speed (PyTorch 2.0+)
-                try:
-                    self.model = torch.compile(self.model, mode="reduce-overhead")
-                    print("[SCG_LocalVLM]   torch.compile: enabled (reduce-overhead mode)")
-                except Exception as compile_err:
-                    print(f"[SCG_LocalVLM]   torch.compile: skipped ({type(compile_err).__name__})")
+                # Set model to eval mode for inference
+                self.model.eval()
+                print("[SCG_LocalVLM]   Model set to eval mode")
                 
                 # Print comprehensive model info
                 print(f"[SCG_LocalVLM] Model loaded successfully in {load_time:.2f}s")
