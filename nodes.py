@@ -245,6 +245,10 @@ class QwenVL:
                     ["none", "4bit", "8bit"],
                     {"default": "none"},
                 ),
+                "attention_mode": (
+                    ["auto", "flash_attention_2", "sdpa", "eager"],
+                    {"default": "auto"},
+                ),
                 "keep_model_loaded": ("BOOLEAN", {"default": False}),
                 "bypass": ("BOOLEAN", {"default": False}),
                 "do_sample": ("BOOLEAN", {"default": True}),
@@ -294,6 +298,7 @@ class QwenVL:
         text,
         model,
         quantization,
+        attention_mode,
         keep_model_loaded,
         bypass,
         do_sample,
@@ -366,7 +371,8 @@ class QwenVL:
                     bnb_4bit_compute_dtype=compute_dtype,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
-                    llm_int8_threshold=6.0,  # CRITICAL: Keeps outliers in FP16 for better performance
+                    # REMOVED: llm_int8_threshold - This parameter is ONLY for 8bit, NOT 4bit
+                    # Using it with 4bit causes catastrophic slowdown
                 )
                 load_kwargs["quantization_config"] = quantization_config
                 print("[SCG_LocalVLM] Loading with 4-bit quantization")
@@ -374,22 +380,36 @@ class QwenVL:
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
                     bnb_8bit_compute_dtype=compute_dtype,
+                    llm_int8_threshold=6.0,  # This IS correct for 8bit
                 )
                 load_kwargs["quantization_config"] = quantization_config
                 print("[SCG_LocalVLM] Loading with 8-bit quantization")
             else:
                 print("[SCG_LocalVLM] Loading without quantization (full precision)")
 
-            # Try Flash Attention 2 with proper detection
-            flash_attn_available = False
-            if torch.cuda.is_available():
+            # Handle attention mode selection
+            attention_used = "default (auto)"
+            if attention_mode == "flash_attention_2":
                 try:
                     import flash_attn
                     load_kwargs["attn_implementation"] = "flash_attention_2"
-                    flash_attn_available = True
-                    print("[SCG_LocalVLM] Flash Attention 2 available - will attempt to use")
+                    attention_used = "flash_attention_2"
+                    print("[SCG_LocalVLM] Using Flash Attention 2")
                 except ImportError:
-                    print("[SCG_LocalVLM] Flash Attention 2 not installed - using default attention")
+                    print("[SCG_LocalVLM] WARNING: flash_attention_2 requested but not installed")
+                    print("[SCG_LocalVLM] Falling back to auto (sdpa)")
+                    attention_used = "auto (sdpa fallback)"
+            elif attention_mode == "sdpa":
+                load_kwargs["attn_implementation"] = "sdpa"
+                attention_used = "sdpa"
+                print("[SCG_LocalVLM] Using SDPA attention")
+            elif attention_mode == "eager":
+                load_kwargs["attn_implementation"] = "eager"
+                attention_used = "eager"
+                print("[SCG_LocalVLM] Using eager attention")
+            else:
+                # "auto" - let transformers decide
+                print("[SCG_LocalVLM] Using auto attention selection")
 
             # Load the model
             model_class = _get_model_class(model, is_vl=True)
@@ -409,20 +429,16 @@ class QwenVL:
 
                 load_time = time.time() - load_start
 
-                # Print model info for verification
+                # Print comprehensive model info
                 print(f"[SCG_LocalVLM] Model loaded successfully in {load_time:.2f}s")
                 print(f"[SCG_LocalVLM]   Device: {self.model.device}")
                 print(f"[SCG_LocalVLM]   Dtype: {self.model.dtype}")
+                print(f"[SCG_LocalVLM]   Attention: {attention_used}")
 
-                # Check if Flash Attention actually loaded
-                if flash_attn_available:
-                    if hasattr(self.model.config, '_attn_implementation'):
-                        actual_attn = self.model.config._attn_implementation
-                        print(f"[SCG_LocalVLM]   Attention: {actual_attn}")
-                    else:
-                        print(f"[SCG_LocalVLM]   Attention: flash_attention_2 (requested, verification unavailable)")
-                else:
-                    print(f"[SCG_LocalVLM]   Attention: default (sdpa)")
+                # Verify actual attention implementation if available
+                if hasattr(self.model.config, '_attn_implementation'):
+                    actual_attn = self.model.config._attn_implementation
+                    print(f"[SCG_LocalVLM]   Attention (verified): {actual_attn}")
 
                 # Show quantization info
                 if quantization != "none":
@@ -432,9 +448,14 @@ class QwenVL:
 
             except Exception as e:
                 print(f"[SCG_LocalVLM] Error loading model: {str(e)}")
-                if flash_attn_available:
-                    print("[SCG_LocalVLM] Retrying without Flash Attention...")
+                import traceback
+                print(traceback.format_exc())
+
+                # Try fallback without attention implementation
+                if "attn_implementation" in load_kwargs:
+                    print(f"[SCG_LocalVLM] Retrying without {attention_mode} attention...")
                     load_kwargs.pop("attn_implementation", None)
+
                     if model_class == "Qwen3":
                         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                             self.model_checkpoint,
@@ -445,7 +466,7 @@ class QwenVL:
                             self.model_checkpoint,
                             **load_kwargs,
                         )
-                    print("[SCG_LocalVLM] Model loaded with default attention")
+                    print("[SCG_LocalVLM] Model loaded with fallback attention")
                 else:
                     raise
 
@@ -648,6 +669,10 @@ class Qwen:
                     ["none", "4bit", "8bit"],
                     {"default": "none"},
                 ),
+                "attention_mode": (
+                    ["auto", "flash_attention_2", "sdpa", "eager"],
+                    {"default": "auto"},
+                ),
                 "keep_model_loaded": ("BOOLEAN", {"default": False}),
                 "bypass": ("BOOLEAN", {"default": False}),
                 "do_sample": ("BOOLEAN", {"default": True}),
@@ -690,6 +715,7 @@ class Qwen:
         prompt,
         model,
         quantization,
+        attention_mode,
         keep_model_loaded,
         bypass,
         do_sample,
@@ -749,7 +775,7 @@ class Qwen:
                     bnb_4bit_compute_dtype=compute_dtype,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
-                    llm_int8_threshold=6.0,  # CRITICAL: Keeps outliers in FP16 for better performance
+                    # REMOVED: llm_int8_threshold - This parameter is ONLY for 8bit, NOT 4bit
                 )
                 load_kwargs["quantization_config"] = quantization_config
                 print("[SCG_LocalVLM] Loading with 4-bit quantization")
@@ -757,22 +783,36 @@ class Qwen:
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
                     bnb_8bit_compute_dtype=compute_dtype,
+                    llm_int8_threshold=6.0,  # This IS correct for 8bit
                 )
                 load_kwargs["quantization_config"] = quantization_config
                 print("[SCG_LocalVLM] Loading with 8-bit quantization")
             else:
                 print("[SCG_LocalVLM] Loading without quantization (full precision)")
 
-            # Try Flash Attention 2 with proper detection
-            flash_attn_available = False
-            if torch.cuda.is_available():
+            # Handle attention mode selection
+            attention_used = "default (auto)"
+            if attention_mode == "flash_attention_2":
                 try:
                     import flash_attn
                     load_kwargs["attn_implementation"] = "flash_attention_2"
-                    flash_attn_available = True
-                    print("[SCG_LocalVLM] Flash Attention 2 available - will attempt to use")
+                    attention_used = "flash_attention_2"
+                    print("[SCG_LocalVLM] Using Flash Attention 2")
                 except ImportError:
-                    print("[SCG_LocalVLM] Flash Attention 2 not installed - using default attention")
+                    print("[SCG_LocalVLM] WARNING: flash_attention_2 requested but not installed")
+                    print("[SCG_LocalVLM] Falling back to auto (sdpa)")
+                    attention_used = "auto (sdpa fallback)"
+            elif attention_mode == "sdpa":
+                load_kwargs["attn_implementation"] = "sdpa"
+                attention_used = "sdpa"
+                print("[SCG_LocalVLM] Using SDPA attention")
+            elif attention_mode == "eager":
+                load_kwargs["attn_implementation"] = "eager"
+                attention_used = "eager"
+                print("[SCG_LocalVLM] Using eager attention")
+            else:
+                # "auto" - let transformers decide
+                print("[SCG_LocalVLM] Using auto attention selection")
 
             # Load the model
             print(f"[SCG_LocalVLM] Loading model from {self.model_checkpoint}")
@@ -785,20 +825,16 @@ class Qwen:
 
                 load_time = time.time() - load_start
 
-                # Print model info for verification
+                # Print comprehensive model info
                 print(f"[SCG_LocalVLM] Model loaded successfully in {load_time:.2f}s")
                 print(f"[SCG_LocalVLM]   Device: {self.model.device}")
                 print(f"[SCG_LocalVLM]   Dtype: {self.model.dtype}")
+                print(f"[SCG_LocalVLM]   Attention: {attention_used}")
 
-                # Check if Flash Attention actually loaded
-                if flash_attn_available:
-                    if hasattr(self.model.config, '_attn_implementation'):
-                        actual_attn = self.model.config._attn_implementation
-                        print(f"[SCG_LocalVLM]   Attention: {actual_attn}")
-                    else:
-                        print(f"[SCG_LocalVLM]   Attention: flash_attention_2 (requested, verification unavailable)")
-                else:
-                    print(f"[SCG_LocalVLM]   Attention: default (sdpa)")
+                # Verify actual attention implementation if available
+                if hasattr(self.model.config, '_attn_implementation'):
+                    actual_attn = self.model.config._attn_implementation
+                    print(f"[SCG_LocalVLM]   Attention (verified): {actual_attn}")
 
                 # Show quantization info
                 if quantization != "none":
@@ -808,14 +844,18 @@ class Qwen:
 
             except Exception as e:
                 print(f"[SCG_LocalVLM] Error loading model: {str(e)}")
-                if flash_attn_available:
-                    print("[SCG_LocalVLM] Retrying without Flash Attention...")
+                import traceback
+                print(traceback.format_exc())
+
+                # Try fallback without attention implementation
+                if "attn_implementation" in load_kwargs:
+                    print(f"[SCG_LocalVLM] Retrying without {attention_mode} attention...")
                     load_kwargs.pop("attn_implementation", None)
                     self.model = AutoModelForCausalLM.from_pretrained(
                         self.model_checkpoint,
                         **load_kwargs,
                     )
-                    print("[SCG_LocalVLM] Model loaded with default attention")
+                    print("[SCG_LocalVLM] Model loaded with fallback attention")
                 else:
                     raise
 
