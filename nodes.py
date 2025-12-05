@@ -301,10 +301,16 @@ class QwenVL:
             )
 
         if self.model is None:
+            # Determine compute dtype for quantization
+            compute_dtype = torch.bfloat16 if self.bf16_support else torch.float16
+            
             # Load the model on the available device(s)
             if quantization == "4bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
                 )
             elif quantization == "8bit":
                 quantization_config = BitsAndBytesConfig(
@@ -318,14 +324,14 @@ class QwenVL:
             if model_class == "Qwen3":
                 self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                     self.model_checkpoint,
-                    torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
+                    torch_dtype=compute_dtype,
                     device_map="auto",
                     quantization_config=quantization_config,
                 )
             else:
                 self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     self.model_checkpoint,
-                    torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
+                    torch_dtype=compute_dtype,
                     device_map="auto",
                     quantization_config=quantization_config,
                 )
@@ -516,10 +522,16 @@ class Qwen:
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
 
         if self.model is None:
+            # Determine compute dtype for quantization
+            compute_dtype = torch.bfloat16 if self.bf16_support else torch.float16
+            
             # Load the model on the available device(s)
             if quantization == "4bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
                 )
             elif quantization == "8bit":
                 quantization_config = BitsAndBytesConfig(
@@ -530,7 +542,7 @@ class Qwen:
 
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_checkpoint,
-                torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
+                torch_dtype=compute_dtype,
                 device_map="auto",
                 quantization_config=quantization_config,
             )
