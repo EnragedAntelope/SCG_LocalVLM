@@ -22,6 +22,25 @@ try:
     import comfy.model_management as comfy_mm
 except ImportError:  # ComfyUI runtime not available during development/tests
     comfy_mm = None
+def _check_quantization_support():
+    """Check if quantization kernels are available and working."""
+    if not torch.cuda.is_available():
+        return False, "CUDA not available"
+    
+    try:
+        import bitsandbytes as bnb
+        # Test if CUDA kernels are available
+        test_tensor = torch.randn(10, 10).cuda()
+        try:
+            # Try to use quantization kernel
+            from bitsandbytes.functional import quantize_4bit
+            quantize_4bit(test_tensor)
+            return True, "Quantization kernels available"
+        except Exception as e:
+            return False, f"Quantization kernels not working: {e}"
+    except ImportError:
+        return False, "bitsandbytes not installed"
+
 
 
 # --- Custom Models Loading ---
@@ -352,39 +371,58 @@ class QwenVL:
         if self.model is None:
             import time
             load_start = time.time()
-
-            # Determine compute dtype for quantization
+            
+            # Check quantization support if using quantization
+            if quantization != "none":
+                quant_ok, quant_msg = _check_quantization_support()
+                if not quant_ok:
+                    print(f"[SCG_LocalVLM] WARNING: {quant_msg}")
+                    print("[SCG_LocalVLM] Falling back to unquantized loading")
+                    quantization = "none"
+                else:
+                    print(f"[SCG_LocalVLM] {quant_msg}")
+            
+            # Determine compute dtype
             compute_dtype = torch.bfloat16 if self.bf16_support else torch.float16
             print(f"[SCG_LocalVLM] Using compute dtype: {compute_dtype}")
 
-            # Build load_kwargs - ALWAYS include base settings
+            # Build load_kwargs - START WITH MINIMAL SETTINGS
             load_kwargs = {
-                "torch_dtype": compute_dtype,
-                "device_map": "auto",
                 "low_cpu_mem_usage": True,
             }
-
-            # Add quantization config if needed
+            
+            # Handle quantization - DON'T set torch_dtype when quantizing
             if quantization == "4bit":
+                # For single GPU, use explicit device placement instead of "auto"
+                device_map = {"": 0} if torch.cuda.device_count() == 1 else "auto"
+                
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=compute_dtype,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
-                    # REMOVED: llm_int8_threshold - This parameter is ONLY for 8bit, NOT 4bit
-                    # Using it with 4bit causes catastrophic slowdown
+                    bnb_4bit_quant_storage=compute_dtype,  # Store in same dtype as compute
                 )
                 load_kwargs["quantization_config"] = quantization_config
-                print("[SCG_LocalVLM] Loading with 4-bit quantization")
+                load_kwargs["device_map"] = device_map
+                print(f"[SCG_LocalVLM] Loading with 4-bit quantization (device_map: {device_map})")
+                
             elif quantization == "8bit":
+                device_map = {"": 0} if torch.cuda.device_count() == 1 else "auto"
+                
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
                     bnb_8bit_compute_dtype=compute_dtype,
-                    llm_int8_threshold=6.0,  # This IS correct for 8bit
+                    llm_int8_threshold=6.0,
                 )
                 load_kwargs["quantization_config"] = quantization_config
-                print("[SCG_LocalVLM] Loading with 8-bit quantization")
+                load_kwargs["device_map"] = device_map
+                print(f"[SCG_LocalVLM] Loading with 8-bit quantization (device_map: {device_map})")
+                
             else:
+                # ONLY set torch_dtype when NOT quantizing
+                load_kwargs["torch_dtype"] = compute_dtype
+                load_kwargs["device_map"] = "auto"
                 print("[SCG_LocalVLM] Loading without quantization (full precision)")
 
             # Handle attention mode selection
@@ -397,6 +435,7 @@ class QwenVL:
                     print("[SCG_LocalVLM] Using Flash Attention 2")
                 except ImportError:
                     print("[SCG_LocalVLM] WARNING: flash_attention_2 requested but not installed")
+                    print("[SCG_LocalVLM] Install with: pip install flash-attn --no-build-isolation")
                     print("[SCG_LocalVLM] Falling back to auto (sdpa)")
                     attention_used = "auto (sdpa fallback)"
             elif attention_mode == "sdpa":
@@ -406,15 +445,15 @@ class QwenVL:
             elif attention_mode == "eager":
                 load_kwargs["attn_implementation"] = "eager"
                 attention_used = "eager"
-                print("[SCG_LocalVLM] Using eager attention")
+                print("[SCG_LocalVLM] Using eager attention (slowest, most compatible)")
             else:
-                # "auto" - let transformers decide
-                print("[SCG_LocalVLM] Using auto attention selection")
+                # "auto" - let transformers decide (usually picks sdpa)
+                print("[SCG_LocalVLM] Using auto attention selection (will use sdpa if available)")
 
             # Load the model
             model_class = _get_model_class(model, is_vl=True)
             print(f"[SCG_LocalVLM] Loading {model_class} model from {self.model_checkpoint}")
-
+            
             try:
                 if model_class == "Qwen3":
                     self.model = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -426,36 +465,56 @@ class QwenVL:
                         self.model_checkpoint,
                         **load_kwargs,
                     )
-
+                
                 load_time = time.time() - load_start
-
+                
+                # Try to enable BetterTransformer for additional speed
+                if quantization == "none":  # BetterTransformer doesn't work with quantization
+                    try:
+                        self.model = self.model.to_bettertransformer()
+                        print("[SCG_LocalVLM]   BetterTransformer: enabled")
+                    except Exception:
+                        pass  # Not available or not supported
+                
                 # Print comprehensive model info
                 print(f"[SCG_LocalVLM] Model loaded successfully in {load_time:.2f}s")
                 print(f"[SCG_LocalVLM]   Device: {self.model.device}")
                 print(f"[SCG_LocalVLM]   Dtype: {self.model.dtype}")
                 print(f"[SCG_LocalVLM]   Attention: {attention_used}")
-
-                # Verify actual attention implementation if available
+                
+                # Verify actual attention implementation
                 if hasattr(self.model.config, '_attn_implementation'):
                     actual_attn = self.model.config._attn_implementation
                     print(f"[SCG_LocalVLM]   Attention (verified): {actual_attn}")
-
+                
                 # Show quantization info
                 if quantization != "none":
                     print(f"[SCG_LocalVLM]   Quantization: {quantization}")
                     if hasattr(self.model, 'hf_device_map'):
                         print(f"[SCG_LocalVLM]   Device map: {self.model.hf_device_map}")
-
+                    
+                    # Check if model is actually quantized
+                    is_quantized = False
+                    for name, param in self.model.named_parameters():
+                        if hasattr(param, 'quant_state'):
+                            is_quantized = True
+                            break
+                    
+                    if is_quantized:
+                        print(f"[SCG_LocalVLM]   Quantization: VERIFIED (layers are quantized)")
+                    else:
+                        print(f"[SCG_LocalVLM]   WARNING: Quantization requested but layers not quantized!")
+                        
             except Exception as e:
                 print(f"[SCG_LocalVLM] Error loading model: {str(e)}")
                 import traceback
                 print(traceback.format_exc())
-
+                
                 # Try fallback without attention implementation
                 if "attn_implementation" in load_kwargs:
                     print(f"[SCG_LocalVLM] Retrying without {attention_mode} attention...")
                     load_kwargs.pop("attn_implementation", None)
-
+                    
                     if model_class == "Qwen3":
                         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                             self.model_checkpoint,
@@ -537,13 +596,21 @@ class QwenVL:
                 ).to(self.model.device)
 
                 # Build generation kwargs with proper parameter handling
+                # Build generation kwargs with optimal settings
                 generation_kwargs = {
                     "max_new_tokens": max_new_tokens,
                     "do_sample": do_sample,
                     "use_cache": True,  # CRITICAL: Enable KV cache
+                    "num_beams": 1,  # Disable beam search for speed
                 }
+                
+                # Optimize batch size based on quantization
+                # Quantized models can handle slightly larger batches
+                if quantization != "none":
+                    # For quantized models, ensure efficient batch processing
+                    generation_kwargs["batch_size"] = 1  # Keep at 1 for now, can increase later
 
-                # Add pad_token_id to prevent warnings and improve batching
+                # Add pad_token_id to prevent warnings
                 if hasattr(self.processor, 'tokenizer'):
                     if hasattr(self.processor.tokenizer, 'pad_token_id') and self.processor.tokenizer.pad_token_id is not None:
                         generation_kwargs["pad_token_id"] = self.processor.tokenizer.pad_token_id
@@ -586,6 +653,15 @@ class QwenVL:
                     print(f"[SCG_LocalVLM]   Tokens: {tokens_generated}")
                     print(f"[SCG_LocalVLM]   Time: {gen_time:.2f}s")
                     print(f"[SCG_LocalVLM]   Speed: {tokens_per_sec:.2f} tokens/sec")
+                    
+                    # Add performance analysis
+                    if quantization == "4bit" and tokens_per_sec < 10:
+                        print(f"[SCG_LocalVLM] WARNING: 4bit performance unusually slow!")
+                        print(f"[SCG_LocalVLM] Expected: 40-60 tok/s, Got: {tokens_per_sec:.2f} tok/s")
+                        print(f"[SCG_LocalVLM] Possible issues:")
+                        print(f"[SCG_LocalVLM]   - Quantization kernels not properly compiled")
+                        print(f"[SCG_LocalVLM]   - CUDA/PyTorch version mismatch")
+                        print(f"[SCG_LocalVLM]   - Try: pip install bitsandbytes --upgrade")
 
                 result = self.processor.batch_decode(
                     generated_ids_trimmed,
@@ -756,38 +832,58 @@ class Qwen:
         if self.model is None:
             import time
             load_start = time.time()
-
-            # Determine compute dtype for quantization
+            
+            # Check quantization support if using quantization
+            if quantization != "none":
+                quant_ok, quant_msg = _check_quantization_support()
+                if not quant_ok:
+                    print(f"[SCG_LocalVLM] WARNING: {quant_msg}")
+                    print("[SCG_LocalVLM] Falling back to unquantized loading")
+                    quantization = "none"
+                else:
+                    print(f"[SCG_LocalVLM] {quant_msg}")
+            
+            # Determine compute dtype
             compute_dtype = torch.bfloat16 if self.bf16_support else torch.float16
             print(f"[SCG_LocalVLM] Using compute dtype: {compute_dtype}")
 
-            # Build load_kwargs - ALWAYS include base settings
+            # Build load_kwargs - START WITH MINIMAL SETTINGS
             load_kwargs = {
-                "torch_dtype": compute_dtype,
-                "device_map": "auto",
                 "low_cpu_mem_usage": True,
             }
-
-            # Add quantization config if needed
+            
+            # Handle quantization - DON'T set torch_dtype when quantizing
             if quantization == "4bit":
+                # For single GPU, use explicit device placement instead of "auto"
+                device_map = {"": 0} if torch.cuda.device_count() == 1 else "auto"
+                
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=compute_dtype,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
-                    # REMOVED: llm_int8_threshold - This parameter is ONLY for 8bit, NOT 4bit
+                    bnb_4bit_quant_storage=compute_dtype,  # Store in same dtype as compute
                 )
                 load_kwargs["quantization_config"] = quantization_config
-                print("[SCG_LocalVLM] Loading with 4-bit quantization")
+                load_kwargs["device_map"] = device_map
+                print(f"[SCG_LocalVLM] Loading with 4-bit quantization (device_map: {device_map})")
+                
             elif quantization == "8bit":
+                device_map = {"": 0} if torch.cuda.device_count() == 1 else "auto"
+                
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
                     bnb_8bit_compute_dtype=compute_dtype,
-                    llm_int8_threshold=6.0,  # This IS correct for 8bit
+                    llm_int8_threshold=6.0,
                 )
                 load_kwargs["quantization_config"] = quantization_config
-                print("[SCG_LocalVLM] Loading with 8-bit quantization")
+                load_kwargs["device_map"] = device_map
+                print(f"[SCG_LocalVLM] Loading with 8-bit quantization (device_map: {device_map})")
+                
             else:
+                # ONLY set torch_dtype when NOT quantizing
+                load_kwargs["torch_dtype"] = compute_dtype
+                load_kwargs["device_map"] = "auto"
                 print("[SCG_LocalVLM] Loading without quantization (full precision)")
 
             # Handle attention mode selection
@@ -800,6 +896,7 @@ class Qwen:
                     print("[SCG_LocalVLM] Using Flash Attention 2")
                 except ImportError:
                     print("[SCG_LocalVLM] WARNING: flash_attention_2 requested but not installed")
+                    print("[SCG_LocalVLM] Install with: pip install flash-attn --no-build-isolation")
                     print("[SCG_LocalVLM] Falling back to auto (sdpa)")
                     attention_used = "auto (sdpa fallback)"
             elif attention_mode == "sdpa":
@@ -809,48 +906,69 @@ class Qwen:
             elif attention_mode == "eager":
                 load_kwargs["attn_implementation"] = "eager"
                 attention_used = "eager"
-                print("[SCG_LocalVLM] Using eager attention")
+                print("[SCG_LocalVLM] Using eager attention (slowest, most compatible)")
             else:
-                # "auto" - let transformers decide
-                print("[SCG_LocalVLM] Using auto attention selection")
+                # "auto" - let transformers decide (usually picks sdpa)
+                print("[SCG_LocalVLM] Using auto attention selection (will use sdpa if available)")
 
             # Load the model
             print(f"[SCG_LocalVLM] Loading model from {self.model_checkpoint}")
-
+            
             try:
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_checkpoint,
                     **load_kwargs,
                 )
-
+                
                 load_time = time.time() - load_start
-
+                
+                # Try to enable BetterTransformer for additional speed
+                if quantization == "none":  # BetterTransformer doesn't work with quantization
+                    try:
+                        self.model = self.model.to_bettertransformer()
+                        print("[SCG_LocalVLM]   BetterTransformer: enabled")
+                    except Exception:
+                        pass  # Not available or not supported
+                
                 # Print comprehensive model info
                 print(f"[SCG_LocalVLM] Model loaded successfully in {load_time:.2f}s")
                 print(f"[SCG_LocalVLM]   Device: {self.model.device}")
                 print(f"[SCG_LocalVLM]   Dtype: {self.model.dtype}")
                 print(f"[SCG_LocalVLM]   Attention: {attention_used}")
-
-                # Verify actual attention implementation if available
+                
+                # Verify actual attention implementation
                 if hasattr(self.model.config, '_attn_implementation'):
                     actual_attn = self.model.config._attn_implementation
                     print(f"[SCG_LocalVLM]   Attention (verified): {actual_attn}")
-
+                
                 # Show quantization info
                 if quantization != "none":
                     print(f"[SCG_LocalVLM]   Quantization: {quantization}")
                     if hasattr(self.model, 'hf_device_map'):
                         print(f"[SCG_LocalVLM]   Device map: {self.model.hf_device_map}")
-
+                    
+                    # Check if model is actually quantized
+                    is_quantized = False
+                    for name, param in self.model.named_parameters():
+                        if hasattr(param, 'quant_state'):
+                            is_quantized = True
+                            break
+                    
+                    if is_quantized:
+                        print(f"[SCG_LocalVLM]   Quantization: VERIFIED (layers are quantized)")
+                    else:
+                        print(f"[SCG_LocalVLM]   WARNING: Quantization requested but layers not quantized!")
+                        
             except Exception as e:
                 print(f"[SCG_LocalVLM] Error loading model: {str(e)}")
                 import traceback
                 print(traceback.format_exc())
-
+                
                 # Try fallback without attention implementation
                 if "attn_implementation" in load_kwargs:
                     print(f"[SCG_LocalVLM] Retrying without {attention_mode} attention...")
                     load_kwargs.pop("attn_implementation", None)
+                    
                     self.model = AutoModelForCausalLM.from_pretrained(
                         self.model_checkpoint,
                         **load_kwargs,
