@@ -169,6 +169,238 @@ if torch is not None:
             self.assertEqual(result, ["decoded text output"])
             clear_mock.assert_called_once()
 
+        @patch("nodes.AutoModelForCausalLM.from_pretrained", return_value=DummyTextModel())
+        @patch("nodes.AutoTokenizer.from_pretrained", return_value=DummyTokenizer())
+        @patch("nodes._clear_cuda_memory")
+        def test_qwen_config_change_triggers_reload_quantization(self, clear_mock, tokenizer_mock, model_mock):
+            """Test that changing quantization unloads the old model and reloads."""
+            self._ensure_checkpoint_path("Qwen3-4B-Instruct-2507")
+            node = nodes.Qwen()
+
+            # First run with none quantization, keep model loaded
+            node.inference(
+                system="sys",
+                prompt="hi",
+                model="Qwen3-4B-Instruct-2507",
+                quantization="none",
+                attention_mode="sdpa",
+                keep_model_loaded=True,
+                bypass=False,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                top_k=50,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                max_new_tokens=10,
+                seed=-1,
+            )
+
+            # Verify config is tracked
+            self.assertEqual(node._loaded_quantization, "none")
+            self.assertEqual(node._loaded_attention_mode, "sdpa")
+            self.assertIsNotNone(node.model)
+            first_load_count = model_mock.call_count
+
+            # Second run with 4bit quantization - should trigger reload
+            node.inference(
+                system="sys",
+                prompt="hi",
+                model="Qwen3-4B-Instruct-2507",
+                quantization="4bit",
+                attention_mode="sdpa",
+                keep_model_loaded=True,
+                bypass=False,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                top_k=50,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                max_new_tokens=10,
+                seed=-1,
+            )
+
+            # Model should have been loaded again due to quantization change
+            self.assertEqual(model_mock.call_count, first_load_count + 1)
+            self.assertEqual(node._loaded_quantization, "4bit")
+
+        @patch("nodes.AutoModelForCausalLM.from_pretrained", return_value=DummyTextModel())
+        @patch("nodes.AutoTokenizer.from_pretrained", return_value=DummyTokenizer())
+        @patch("nodes._clear_cuda_memory")
+        def test_qwen_config_change_triggers_reload_attention(self, clear_mock, tokenizer_mock, model_mock):
+            """Test that changing attention_mode unloads the old model and reloads."""
+            self._ensure_checkpoint_path("Qwen3-4B-Instruct-2507")
+            node = nodes.Qwen()
+
+            # First run with sdpa
+            node.inference(
+                system="sys",
+                prompt="hi",
+                model="Qwen3-4B-Instruct-2507",
+                quantization="none",
+                attention_mode="sdpa",
+                keep_model_loaded=True,
+                bypass=False,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                top_k=50,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                max_new_tokens=10,
+                seed=-1,
+            )
+
+            self.assertEqual(node._loaded_attention_mode, "sdpa")
+            first_load_count = model_mock.call_count
+
+            # Second run with eager - should trigger reload
+            node.inference(
+                system="sys",
+                prompt="hi",
+                model="Qwen3-4B-Instruct-2507",
+                quantization="none",
+                attention_mode="eager",
+                keep_model_loaded=True,
+                bypass=False,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                top_k=50,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                max_new_tokens=10,
+                seed=-1,
+            )
+
+            # Model should have been loaded again due to attention change
+            self.assertEqual(model_mock.call_count, first_load_count + 1)
+            self.assertEqual(node._loaded_attention_mode, "eager")
+
+        @patch("nodes.AutoModelForCausalLM.from_pretrained", return_value=DummyTextModel())
+        @patch("nodes.AutoTokenizer.from_pretrained", return_value=DummyTokenizer())
+        @patch("nodes._clear_cuda_memory")
+        def test_qwen_same_config_reuses_model(self, clear_mock, tokenizer_mock, model_mock):
+            """Test that same configuration reuses the loaded model."""
+            self._ensure_checkpoint_path("Qwen3-4B-Instruct-2507")
+            node = nodes.Qwen()
+
+            # First run
+            node.inference(
+                system="sys",
+                prompt="hi",
+                model="Qwen3-4B-Instruct-2507",
+                quantization="none",
+                attention_mode="sdpa",
+                keep_model_loaded=True,
+                bypass=False,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                top_k=50,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                max_new_tokens=10,
+                seed=-1,
+            )
+
+            first_load_count = model_mock.call_count
+
+            # Second run with same config - should reuse model
+            node.inference(
+                system="sys",
+                prompt="different prompt",
+                model="Qwen3-4B-Instruct-2507",
+                quantization="none",
+                attention_mode="sdpa",
+                keep_model_loaded=True,
+                bypass=False,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                top_k=50,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                max_new_tokens=10,
+                seed=-1,
+            )
+
+            # Model should NOT have been loaded again
+            self.assertEqual(model_mock.call_count, first_load_count)
+
+        def test_qwen_config_changed_method(self):
+            """Test the _config_changed method directly."""
+            node = nodes.Qwen()
+
+            # No model loaded - should return False
+            self.assertFalse(node._config_changed("model1", "none", "sdpa"))
+
+            # Simulate a loaded model
+            node.model = DummyTextModel()
+            node._loaded_model_name = "model1"
+            node._loaded_quantization = "none"
+            node._loaded_attention_mode = "sdpa"
+
+            # Same config - should return False
+            self.assertFalse(node._config_changed("model1", "none", "sdpa"))
+
+            # Different model - should return True
+            self.assertTrue(node._config_changed("model2", "none", "sdpa"))
+
+            # Different quantization - should return True
+            self.assertTrue(node._config_changed("model1", "4bit", "sdpa"))
+
+            # Different attention - should return True
+            self.assertTrue(node._config_changed("model1", "none", "eager"))
+
+        def test_qwenvl_config_changed_method(self):
+            """Test the _config_changed method for QwenVL."""
+            node = nodes.QwenVL()
+
+            # No model loaded - should return False
+            self.assertFalse(node._config_changed("model1", "none", "sdpa"))
+
+            # Simulate a loaded model
+            node.model = DummyVLModel()
+            node._loaded_model_name = "model1"
+            node._loaded_quantization = "none"
+            node._loaded_attention_mode = "sdpa"
+
+            # Same config - should return False
+            self.assertFalse(node._config_changed("model1", "none", "sdpa"))
+
+            # Different model - should return True
+            self.assertTrue(node._config_changed("model2", "none", "sdpa"))
+
+            # Different quantization - should return True
+            self.assertTrue(node._config_changed("model1", "4bit", "sdpa"))
+
+            # Different attention - should return True
+            self.assertTrue(node._config_changed("model1", "none", "eager"))
+
+        @patch("nodes._clear_cuda_memory")
+        def test_unload_clears_config_tracking(self, clear_mock):
+            """Test that _unload_resources clears configuration tracking."""
+            node = nodes.Qwen()
+
+            # Set up some config
+            node.model = DummyTextModel()
+            node.tokenizer = DummyTokenizer()
+            node._loaded_model_name = "model1"
+            node._loaded_quantization = "none"
+            node._loaded_attention_mode = "sdpa"
+
+            # Unload
+            node._unload_resources()
+
+            # All should be cleared
+            self.assertIsNone(node.model)
+            self.assertIsNone(node.tokenizer)
+            self.assertIsNone(node._loaded_model_name)
+            self.assertIsNone(node._loaded_quantization)
+            self.assertIsNone(node._loaded_attention_mode)
+
 
 else:
 
