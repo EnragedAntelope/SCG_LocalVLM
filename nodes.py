@@ -234,6 +234,10 @@ class QwenVL:
                     "INT",
                     {"default": 512, "min": 128, "max": 8000, "step": 1},
                 ),
+                "repetition_penalty": (
+                    "FLOAT",
+                    {"default": 1.1, "min": 1.0, "max": 2.0, "step": 0.05},
+                ),
                 "seed": ("INT", {"default": -1}),
             },
             "optional": {
@@ -259,6 +263,7 @@ class QwenVL:
         bypass,
         temperature,
         max_new_tokens,
+        repetition_penalty,
         seed,
         image1=None,
         image2=None,
@@ -304,7 +309,7 @@ class QwenVL:
             # Determine compute dtype for quantization
             compute_dtype = torch.bfloat16 if self.bf16_support else torch.float16
             
-            # Load the model on the available device(s)
+            # Build load kwargs based on quantization mode
             if quantization == "4bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -312,28 +317,40 @@ class QwenVL:
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                 )
+                load_kwargs = {
+                    "torch_dtype": compute_dtype,
+                    "device_map": "auto",
+                    "quantization_config": quantization_config,
+                }
             elif quantization == "8bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
+                    bnb_8bit_compute_dtype=compute_dtype,
                 )
+                load_kwargs = {
+                    "torch_dtype": compute_dtype,
+                    "device_map": "auto",
+                    "quantization_config": quantization_config,
+                }
             else:
-                quantization_config = None
+                # No quantization - use low_cpu_mem_usage to load directly to GPU
+                load_kwargs = {
+                    "torch_dtype": compute_dtype,
+                    "device_map": "auto",
+                    "low_cpu_mem_usage": True,
+                }
 
             # Choose the appropriate model class based on the model family
             model_class = _get_model_class(model, is_vl=True)
             if model_class == "Qwen3":
                 self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                     self.model_checkpoint,
-                    torch_dtype=compute_dtype,
-                    device_map="auto",
-                    quantization_config=quantization_config,
+                    **load_kwargs,
                 )
             else:
                 self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     self.model_checkpoint,
-                    torch_dtype=compute_dtype,
-                    device_map="auto",
-                    quantization_config=quantization_config,
+                    **load_kwargs,
                 )
 
         processed_video_path = None
@@ -400,9 +417,13 @@ class QwenVL:
                     videos=video_inputs,
                     padding=True,
                     return_tensors="pt",
-                ).to("cuda")
+                ).to(self.model.device)
 
-                generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    repetition_penalty=repetition_penalty,
+                )
                 generated_ids_trimmed = [
                     out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
                 ]
@@ -475,6 +496,10 @@ class Qwen:
                     "INT",
                     {"default": 512, "min": 128, "max": 8000, "step": 1},
                 ),
+                "repetition_penalty": (
+                    "FLOAT",
+                    {"default": 1.1, "min": 1.0, "max": 2.0, "step": 0.05},
+                ),
                 "seed": ("INT", {"default": -1}),  # add seed parameter, default is -1
             },
         }
@@ -493,6 +518,7 @@ class Qwen:
         bypass,
         temperature,
         max_new_tokens,
+        repetition_penalty,
         seed,
     ):
         # Bypass mode: pass prompt directly to output without model inference
@@ -525,7 +551,7 @@ class Qwen:
             # Determine compute dtype for quantization
             compute_dtype = torch.bfloat16 if self.bf16_support else torch.float16
             
-            # Load the model on the available device(s)
+            # Build load kwargs based on quantization mode
             if quantization == "4bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -533,18 +559,32 @@ class Qwen:
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                 )
+                load_kwargs = {
+                    "torch_dtype": compute_dtype,
+                    "device_map": "auto",
+                    "quantization_config": quantization_config,
+                }
             elif quantization == "8bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
+                    bnb_8bit_compute_dtype=compute_dtype,
                 )
+                load_kwargs = {
+                    "torch_dtype": compute_dtype,
+                    "device_map": "auto",
+                    "quantization_config": quantization_config,
+                }
             else:
-                quantization_config = None
+                # No quantization - use low_cpu_mem_usage to load directly to GPU
+                load_kwargs = {
+                    "torch_dtype": compute_dtype,
+                    "device_map": "auto",
+                    "low_cpu_mem_usage": True,
+                }
 
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_checkpoint,
-                torch_dtype=compute_dtype,
-                device_map="auto",
-                quantization_config=quantization_config,
+                **load_kwargs,
             )
 
         result = None
@@ -559,9 +599,13 @@ class Qwen:
                     messages, tokenize=False, add_generation_prompt=True
                 )
 
-                inputs = self.tokenizer([text], return_tensors="pt").to("cuda")
+                inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
 
-                generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    repetition_penalty=repetition_penalty,
+                )
                 generated_ids_trimmed = [
                     out_ids[len(in_ids) :]
                     for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
