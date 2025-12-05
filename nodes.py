@@ -329,6 +329,10 @@ class QwenVL:
                     "INT",
                     {"default": 512, "min": 128, "max": 8000, "step": 1},
                 ),
+                "repetition_penalty": (
+                    "FLOAT",
+                    {"default": 1.1, "min": 1.0, "max": 2.0, "step": 0.05},
+                ),
                 "seed": ("INT", {"default": -1}),
             },
             "optional": {
@@ -361,6 +365,7 @@ class QwenVL:
         min_p,
         repetition_penalty,
         max_new_tokens,
+        repetition_penalty,
         seed,
         image1=None,
         image2=None,
@@ -441,6 +446,7 @@ class QwenVL:
             elif quantization == "8bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
+                    bnb_8bit_compute_dtype=compute_dtype,
                 )
                 load_kwargs["quantization_config"] = quantization_config
                 load_kwargs["device_map"] = {"": 0} if torch.cuda.device_count() == 1 else "auto"
@@ -815,6 +821,7 @@ class Qwen:
         min_p,
         repetition_penalty,
         max_new_tokens,
+        repetition_penalty,
         seed,
     ):
         # Bypass mode: pass prompt directly to output without model inference
@@ -879,6 +886,7 @@ class Qwen:
             elif quantization == "8bit":
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
+                    bnb_8bit_compute_dtype=compute_dtype,
                 )
                 load_kwargs["quantization_config"] = quantization_config
                 load_kwargs["device_map"] = "auto"
