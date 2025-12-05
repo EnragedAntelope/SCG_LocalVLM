@@ -218,6 +218,32 @@ After implementing fixes:
 
 - Video-related improvements deferred (as requested)
 - Code refactoring into shared functions deferred (current structure is clear and working)
-- Performance logging (tokens/sec) deferred for future enhancement
 - All changes are backwards compatible
 - Temperature now properly used only in generation, not decoding
+
+## Performance Optimization Session (2025-12-05)
+
+### Final Results (QwenVL, Qwen3-VL-4B on RTX 5090)
+| Mode | Attention | Speed | Status |
+|------|-----------|-------|--------|
+| Non-quantized | SDPA | 16.8 tok/s | ✅ Target met |
+| Non-quantized | FA2 | 16.3 tok/s | ✅ Works on Blackwell |
+| Non-quantized | Eager | 12.8 tok/s | ✅ Working |
+| 4-bit | FA2 | 11.8 tok/s | ⚠️ Slower than expected |
+| 4-bit | SDPA | 5.0 tok/s | ⚠️ Very slow |
+| 4-bit | Eager | 12.7 tok/s | ✅ Best for 4-bit |
+
+### Key Changes Made
+1. **FA2 Detection** - Changed from blocker to hint (`_FA2_OPTIMIZED`), future-proof
+2. **device_map Optimization** - `{"":0}` for single GPU quantized (avoids Accelerate overhead)
+3. **Direct GPU Loading** - `{"":"cuda:0"}` for non-quantized (no CPU→GPU step)
+4. **Removed .cuda() call** - device_map handles GPU placement
+
+### Remaining Issues (External)
+- **4-bit slow on Blackwell (SM 120)** - bitsandbytes kernels not optimized for RTX 50 series
+- Workaround: Use eager attention for 4-bit, or use non-quantized
+- Will likely be fixed in future bitsandbytes release
+
+### Qwen Text Model
+- Same optimizations NOT yet applied (edit tool issues during session)
+- TODO: Apply same device_map and FA2 changes to Qwen text class
