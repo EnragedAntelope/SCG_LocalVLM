@@ -145,14 +145,28 @@ After implementing fixes:
    - Switched from `torch.no_grad()` to `torch.inference_mode()`
    - Provides better performance by more aggressively disabling gradient tracking
 
+3. **KV Cache** ✅ NEW
+   - **CRITICAL**: Added `use_cache=True` to all generate() calls (both classes)
+   - This is essential for quantized model performance (especially 4bit/8bit)
+   - Without KV cache, every token regenerates full attention = major slowdown
+   - Expected improvement: 4bit should now be ~equal or faster than unquantized
+
 ### Error Handling Improvements
 - Specific `torch.cuda.OutOfMemoryError` handling with actionable suggestions
 - Detailed exception logging with traceback for debugging
 - User-friendly error messages with `[SCG_LocalVLM]` prefix
 
-### ComfyUI v3 Compliance
+### ComfyUI v3 Compliance ✅ ENHANCED
 - Added `RETURN_NAMES = ("text",)` to both node classes
 - Verified standard node structure (INPUT_TYPES, RETURN_TYPES, FUNCTION, CATEGORY)
+- Enhanced __init__.py with:
+  - Module docstring explaining features and compatibility
+  - `__version__` export for v3 introspection
+  - `__all__` export list for proper module interface
+  - Better display names for nodes
+- Added comprehensive docstrings to both node classes
+- Maintains full backwards compatibility with ComfyUI v2
+- Ready for ComfyUI v3 public API (stateless execution model compatible)
 
 ## Testing Checklist
 

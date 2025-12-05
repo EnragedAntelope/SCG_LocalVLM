@@ -186,6 +186,19 @@ def tensor_to_pil(image_tensor, batch_index=0) -> Image:
 
 
 class QwenVL:
+    """
+    Qwen Vision-Language Model Node for ComfyUI
+
+    Supports Qwen2.5-VL and Qwen3-VL models with:
+    - Multi-image input (up to 4 images)
+    - Video input via FFmpeg processing
+    - Multiple quantization options (none, 4bit, 8bit)
+    - Advanced generation parameters
+    - Flash Attention 2 optimization
+
+    ComfyUI v2/v3 compatible.
+    """
+
     def __init__(self):
         self.model_checkpoint = None
         self.processor = None
@@ -452,6 +465,7 @@ class QwenVL:
                 generation_kwargs = {
                     "max_new_tokens": max_new_tokens,
                     "do_sample": do_sample,
+                    "use_cache": True,  # CRITICAL: Enable KV cache for performance (especially 4bit/8bit)
                 }
 
                 # Add sampling parameters only if do_sample is True
@@ -505,6 +519,18 @@ class QwenVL:
 
 
 class Qwen:
+    """
+    Qwen Text-Only Language Model Node for ComfyUI
+
+    Supports Qwen2.5 and Qwen3 text generation models with:
+    - Multiple quantization options (none, 4bit, 8bit)
+    - Advanced generation parameters
+    - Flash Attention 2 optimization
+    - System and user prompt support
+
+    ComfyUI v2/v3 compatible.
+    """
+
     def __init__(self):
         self.model_checkpoint = None
         self.tokenizer = None
@@ -691,6 +717,7 @@ class Qwen:
                 generation_kwargs = {
                     "max_new_tokens": max_new_tokens,
                     "do_sample": do_sample,
+                    "use_cache": True,  # CRITICAL: Enable KV cache for performance (especially 4bit/8bit)
                 }
 
                 # Add sampling parameters only if do_sample is True
