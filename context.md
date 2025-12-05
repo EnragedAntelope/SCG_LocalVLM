@@ -137,19 +137,42 @@ After implementing fixes:
 - Expanded `temperature` range to 0-2 with 0.05 step size
 
 ### Performance Optimizations
-1. **Flash Attention 2**
-   - Added automatic detection and enablement with graceful fallback
+1. **Flash Attention 2** ✅ ENHANCED
+   - Proper ImportError detection (checks for flash_attn package)
+   - Graceful fallback with automatic retry if Flash Attention fails
+   - Verification logging shows which attention implementation actually loaded
    - Significantly improves attention computation speed when available
 
 2. **Inference Mode**
    - Switched from `torch.no_grad()` to `torch.inference_mode()`
    - Provides better performance by more aggressively disabling gradient tracking
 
-3. **KV Cache** ✅ NEW
-   - **CRITICAL**: Added `use_cache=True` to all generate() calls (both classes)
-   - This is essential for quantized model performance (especially 4bit/8bit)
+3. **KV Cache** ✅ CRITICAL
+   - Added `use_cache=True` to all generate() calls (both classes)
+   - Essential for quantized model performance (especially 4bit/8bit)
    - Without KV cache, every token regenerates full attention = major slowdown
    - Expected improvement: 4bit should now be ~equal or faster than unquantized
+
+4. **4bit Quantization Optimization** ✅ NEW
+   - Added `llm_int8_threshold=6.0` to BitsAndBytesConfig for 4bit
+   - Keeps outlier features in FP16 for better performance
+   - Critical for achieving fast 4bit inference
+
+5. **Tensor Optimization** ✅ NEW
+   - Optimized tensor_to_pil() to perform operations on GPU before CPU transfer
+   - Uses `.clamp()` and `.byte()` on GPU instead of CPU numpy operations
+   - Reduces unnecessary CPU-GPU memory transfers
+
+6. **Pad Token Handling** ✅ NEW
+   - Properly sets pad_token_id in generation_kwargs
+   - Prevents warnings and improves batching efficiency
+   - Falls back to eos_token_id if pad_token_id not available
+
+7. **Performance Logging** ✅ NEW
+   - Real-time tokens/sec measurement during generation
+   - Model loading time tracking
+   - Comprehensive device/dtype/quantization verification logging
+   - Helps diagnose performance issues quickly
 
 ### Error Handling Improvements
 - Specific `torch.cuda.OutOfMemoryError` handling with actionable suggestions
