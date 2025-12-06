@@ -200,7 +200,6 @@ def _get_text_model_list():
 
 
 def _maybe_move_to_cpu(module):
-    """Move model to CPU before deletion to free GPU memory."""
     if module is None:
         return
     try:
@@ -210,7 +209,6 @@ def _maybe_move_to_cpu(module):
 
 
 def _clear_cuda_memory():
-    """Clear CUDA memory cache."""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -279,7 +277,6 @@ class QwenVL:
         self._loaded_attention_mode = None
 
     def _unload_resources(self):
-        """Unload model and free GPU resources."""
         _maybe_move_to_cpu(self.model)
         self.model = None
         self.processor = None
@@ -791,7 +788,6 @@ class Qwen:
         self._loaded_attention_mode = None
 
     def _unload_resources(self):
-        """Unload model and free GPU resources."""
         _maybe_move_to_cpu(self.model)
         self.model = None
         self.tokenizer = None
