@@ -460,6 +460,10 @@ class QwenVL:
             )
 
         if self.model is None:
+            # Pre-load cleanup: ensure CUDA is in a clean state before loading
+            # This helps prevent performance degradation from residual CUDA state
+            _clear_cuda_memory()
+
             load_start = time.time()
             
             # Check quantization support if using quantization
@@ -964,6 +968,10 @@ class Qwen:
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
 
         if self.model is None:
+            # Pre-load cleanup: ensure CUDA is in a clean state before loading
+            # This helps prevent performance degradation from residual CUDA state
+            _clear_cuda_memory()
+
             load_start = time.time()
             
             # Check quantization support if using quantization
