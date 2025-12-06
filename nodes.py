@@ -271,12 +271,36 @@ class QwenVL:
             torch.cuda.is_available()
             and torch.cuda.get_device_capability(self.device)[0] >= 8
         )
+        # Track current loaded configuration to detect mismatches
+        self._loaded_model_name = None
+        self._loaded_quantization = None
+        self._loaded_attention_mode = None
 
     def _unload_resources(self):
         _maybe_move_to_cpu(self.model)
         self.model = None
         self.processor = None
+        # Clear configuration tracking
+        self._loaded_model_name = None
+        self._loaded_quantization = None
+        self._loaded_attention_mode = None
         _clear_cuda_memory()
+
+    def _config_changed(self, model, quantization, attention_mode):
+        """Check if the requested configuration differs from the loaded model."""
+        if self.model is None:
+            return False  # No model loaded, no mismatch
+
+        if self._loaded_model_name != model:
+            print(f"[SCG_LocalVLM] Model changed: {self._loaded_model_name} -> {model}")
+            return True
+        if self._loaded_quantization != quantization:
+            print(f"[SCG_LocalVLM] Quantization changed: {self._loaded_quantization} -> {quantization}")
+            return True
+        if self._loaded_attention_mode != attention_mode:
+            print(f"[SCG_LocalVLM] Attention mode changed: {self._loaded_attention_mode} -> {attention_mode}")
+            return True
+        return False
 
     @classmethod
     def INPUT_TYPES(s):
@@ -371,6 +395,11 @@ class QwenVL:
         # Bypass mode: pass text directly to output without model inference
         if bypass:
             return (text,)
+
+        # Check if configuration changed - force reload if so
+        if self._config_changed(model, quantization, attention_mode):
+            print("[SCG_LocalVLM] Configuration changed, unloading previous model...")
+            self._unload_resources()
 
         if seed != -1:
             torch.manual_seed(seed)
@@ -534,25 +563,36 @@ class QwenVL:
                 print(f"[SCG_LocalVLM] Error loading model: {str(e)}")
                 import traceback
                 print(traceback.format_exc())
-                
+
                 # Try fallback without attention implementation
                 if "attn_implementation" in load_kwargs:
                     print(f"[SCG_LocalVLM] Retrying without {attention_mode} attention...")
                     load_kwargs.pop("attn_implementation", None)
-                    
-                    if model_class == "Qwen3":
-                        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
-                            self.model_checkpoint,
-                            **load_kwargs,
-                        )
-                    else:
-                        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                            self.model_checkpoint,
-                            **load_kwargs,
-                        )
-                    print("[SCG_LocalVLM] Model loaded with fallback attention")
+
+                    try:
+                        if model_class == "Qwen3":
+                            self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+                                self.model_checkpoint,
+                                **load_kwargs,
+                            )
+                        else:
+                            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                                self.model_checkpoint,
+                                **load_kwargs,
+                            )
+                        print("[SCG_LocalVLM] Model loaded with fallback attention")
+                    except Exception as fallback_e:
+                        print(f"[SCG_LocalVLM] Fallback loading also failed: {fallback_e}")
+                        self._unload_resources()  # Clean up processor on complete failure
+                        raise fallback_e
                 else:
+                    self._unload_resources()  # Clean up processor on complete failure
                     raise
+
+            # Store configuration for mismatch detection on next run
+            self._loaded_model_name = model
+            self._loaded_quantization = quantization
+            self._loaded_attention_mode = attention_mode
 
         processed_video_path = None
         result = None
@@ -692,6 +732,15 @@ class QwenVL:
                     f"3) Use a smaller model. "
                     f"Error: {str(e)}",
                 )
+            except KeyboardInterrupt:
+                print("[SCG_LocalVLM] Inference interrupted by user, cleaning up...")
+                self._unload_resources()  # Always unload on interruption
+                if processed_video_path:
+                    try:
+                        os.remove(processed_video_path)
+                    except FileNotFoundError:
+                        pass
+                raise  # Re-raise to propagate the interruption
             except Exception as e:
                 import traceback
                 error_details = traceback.format_exc()
@@ -733,12 +782,36 @@ class Qwen:
             torch.cuda.is_available()
             and torch.cuda.get_device_capability(self.device)[0] >= 8
         )
+        # Track current loaded configuration to detect mismatches
+        self._loaded_model_name = None
+        self._loaded_quantization = None
+        self._loaded_attention_mode = None
 
     def _unload_resources(self):
         _maybe_move_to_cpu(self.model)
         self.model = None
         self.tokenizer = None
+        # Clear configuration tracking
+        self._loaded_model_name = None
+        self._loaded_quantization = None
+        self._loaded_attention_mode = None
         _clear_cuda_memory()
+
+    def _config_changed(self, model, quantization, attention_mode):
+        """Check if the requested configuration differs from the loaded model."""
+        if self.model is None:
+            return False  # No model loaded, no mismatch
+
+        if self._loaded_model_name != model:
+            print(f"[SCG_LocalVLM] Model changed: {self._loaded_model_name} -> {model}")
+            return True
+        if self._loaded_quantization != quantization:
+            print(f"[SCG_LocalVLM] Quantization changed: {self._loaded_quantization} -> {quantization}")
+            return True
+        if self._loaded_attention_mode != attention_mode:
+            print(f"[SCG_LocalVLM] Attention mode changed: {self._loaded_attention_mode} -> {attention_mode}")
+            return True
+        return False
 
     @classmethod
     def INPUT_TYPES(s):
@@ -825,6 +898,11 @@ class Qwen:
         if not prompt.strip() and not system.strip():
             return ("Error: Both system and prompt are empty.",)
 
+        # Check if configuration changed - force reload if so
+        if self._config_changed(model, quantization, attention_mode):
+            print("[SCG_LocalVLM] Configuration changed, unloading previous model...")
+            self._unload_resources()
+
         if seed != -1:
             torch.manual_seed(seed)
         model_id = _get_model_repo_id(model, is_vl=False)
@@ -891,7 +969,7 @@ class Qwen:
                 print("[SCG_LocalVLM] Loading without quantization (native PyTorch)")
 
             # Handle attention mode - simplified
-            if attention_mode == "flash_attention_2" and _FA2_COMPATIBLE:
+            if attention_mode == "flash_attention_2" and _FA2_OPTIMIZED:
                 try:
                     import flash_attn
                     load_kwargs["attn_implementation"] = "flash_attention_2"
@@ -899,7 +977,7 @@ class Qwen:
                 except ImportError:
                     load_kwargs["attn_implementation"] = "sdpa"
                     attention_used = "sdpa"
-            elif attention_mode == "sdpa" or (attention_mode == "flash_attention_2" and not _FA2_COMPATIBLE):
+            elif attention_mode == "sdpa" or (attention_mode == "flash_attention_2" and not _FA2_OPTIMIZED):
                 load_kwargs["attn_implementation"] = "sdpa"
                 attention_used = "sdpa"
             elif attention_mode == "eager":
@@ -961,19 +1039,30 @@ class Qwen:
                 print(f"[SCG_LocalVLM] Error loading model: {str(e)}")
                 import traceback
                 print(traceback.format_exc())
-                
+
                 # Try fallback without attention implementation
                 if "attn_implementation" in load_kwargs:
                     print(f"[SCG_LocalVLM] Retrying without {attention_mode} attention...")
                     load_kwargs.pop("attn_implementation", None)
-                    
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        self.model_checkpoint,
-                        **load_kwargs,
-                    )
-                    print("[SCG_LocalVLM] Model loaded with fallback attention")
+
+                    try:
+                        self.model = AutoModelForCausalLM.from_pretrained(
+                            self.model_checkpoint,
+                            **load_kwargs,
+                        )
+                        print("[SCG_LocalVLM] Model loaded with fallback attention")
+                    except Exception as fallback_e:
+                        print(f"[SCG_LocalVLM] Fallback loading also failed: {fallback_e}")
+                        self._unload_resources()  # Clean up tokenizer on complete failure
+                        raise fallback_e
                 else:
+                    self._unload_resources()  # Clean up tokenizer on complete failure
                     raise
+
+            # Store configuration for mismatch detection on next run
+            self._loaded_model_name = model
+            self._loaded_quantization = quantization
+            self._loaded_attention_mode = attention_mode
 
         result = None
         with torch.inference_mode():
@@ -1054,6 +1143,10 @@ class Qwen:
                     f"3) Use a smaller model. "
                     f"Error: {str(e)}",
                 )
+            except KeyboardInterrupt:
+                print("[SCG_LocalVLM] Inference interrupted by user, cleaning up...")
+                self._unload_resources()  # Always unload on interruption
+                raise  # Re-raise to propagate the interruption
             except Exception as e:
                 import traceback
                 error_details = traceback.format_exc()
