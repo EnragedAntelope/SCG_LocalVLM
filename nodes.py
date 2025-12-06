@@ -200,19 +200,34 @@ def _get_text_model_list():
 
 
 def _maybe_move_to_cpu(module):
-    if module is None:
-        return
-    try:
-        module.to("cpu")
-    except Exception:
-        pass
+    """Legacy function - no longer moves to CPU to avoid fragmentation issues."""
+    # Moving large models to CPU before deletion can cause CUDA memory
+    # fragmentation and Accelerate device_map state issues.
+    # Just let Python's garbage collector handle it after setting to None.
+    pass
 
 
 def _clear_cuda_memory():
+    """Aggressively clear CUDA memory with proper synchronization."""
+    # First, run garbage collection to release Python references
     gc.collect()
+
     if torch.cuda.is_available():
+        # Synchronize CUDA to ensure all pending operations complete
+        # before we try to free memory
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+
+        # Clear CUDA cache
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
+
+        # Run GC again after CUDA cleanup
+        gc.collect()
+
+    # Use ComfyUI's memory management if available
     if comfy_mm is not None:
         try:
             soft_empty = getattr(comfy_mm, "soft_empty_cache", None)
@@ -277,13 +292,26 @@ class QwenVL:
         self._loaded_attention_mode = None
 
     def _unload_resources(self):
-        _maybe_move_to_cpu(self.model)
+        """Properly unload model and free all GPU resources."""
+        if self.model is not None:
+            # Remove Accelerate hooks if present (from device_map loading)
+            try:
+                from accelerate.hooks import remove_hook_from_module
+                remove_hook_from_module(self.model, recurse=True)
+            except (ImportError, Exception):
+                pass
+
+            # Delete model reference
+            del self.model
+
         self.model = None
         self.processor = None
+
         # Clear configuration tracking
         self._loaded_model_name = None
         self._loaded_quantization = None
         self._loaded_attention_mode = None
+
         _clear_cuda_memory()
 
     def _config_changed(self, model, quantization, attention_mode):
@@ -788,13 +816,26 @@ class Qwen:
         self._loaded_attention_mode = None
 
     def _unload_resources(self):
-        _maybe_move_to_cpu(self.model)
+        """Properly unload model and free all GPU resources."""
+        if self.model is not None:
+            # Remove Accelerate hooks if present (from device_map loading)
+            try:
+                from accelerate.hooks import remove_hook_from_module
+                remove_hook_from_module(self.model, recurse=True)
+            except (ImportError, Exception):
+                pass
+
+            # Delete model reference
+            del self.model
+
         self.model = None
         self.tokenizer = None
+
         # Clear configuration tracking
         self._loaded_model_name = None
         self._loaded_quantization = None
         self._loaded_attention_mode = None
+
         _clear_cuda_memory()
 
     def _config_changed(self, model, quantization, attention_mode):
