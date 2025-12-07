@@ -691,6 +691,35 @@ class QwenVL:
             self._loaded_quantization = quantization
             self._loaded_attention_mode = attention_mode
 
+            # Warmup: trigger CUDA kernel JIT compilation to avoid slow first inference
+            # This runs a small forward pass to compile attention kernels for typical sizes
+            try:
+                warmup_start = time.time()
+                print("[SCG_LocalVLM] Running CUDA kernel warmup...")
+
+                with torch.inference_mode():
+                    # Create minimal dummy inputs that trigger the same code paths
+                    # Use sequence lengths that will trigger kernel compilation
+                    dummy_input_ids = torch.ones((1, 128), dtype=torch.long, device=self.model.device)
+
+                    # Run a short generation to warm up both prefill and decode kernels
+                    _ = self.model.generate(
+                        input_ids=dummy_input_ids,
+                        max_new_tokens=8,  # Just a few tokens to trigger decode loop
+                        do_sample=False,
+                        use_cache=True,
+                        pad_token_id=self.processor.tokenizer.pad_token_id if hasattr(self.processor, 'tokenizer') else 0,
+                    )
+
+                    # Sync to ensure kernels are fully compiled
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+
+                warmup_time = time.time() - warmup_start
+                print(f"[SCG_LocalVLM] Warmup completed in {warmup_time:.2f}s")
+            except Exception as e:
+                print(f"[SCG_LocalVLM] Warmup failed (non-fatal): {e}")
+
             # Save to class-level cache for instance persistence
             self._save_to_cache()
 
