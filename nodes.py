@@ -794,26 +794,55 @@ class QwenVL:
                     print(f"[SCG_LocalVLM]   Reserved: {reserved_mb:.1f} MB")
                     print(f"[SCG_LocalVLM]   Peak allocated: {max_allocated_mb:.1f} MB")
 
+                    # GPU clock and power state diagnostics
+                    try:
+                        result = subprocess.run(
+                            ["nvidia-smi", "--query-gpu=clocks.current.graphics,clocks.max.graphics,power.draw,power.limit,temperature.gpu",
+                             "--format=csv,noheader,nounits"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if result.returncode == 0:
+                            parts = [p.strip() for p in result.stdout.strip().split(',')]
+                            if len(parts) >= 5:
+                                curr_clock, max_clock, power_draw, power_limit, temp = parts[:5]
+                                print(f"[SCG_LocalVLM] GPU State:")
+                                print(f"[SCG_LocalVLM]   Clock: {curr_clock}/{max_clock} MHz")
+                                print(f"[SCG_LocalVLM]   Power: {power_draw}/{power_limit} W")
+                                print(f"[SCG_LocalVLM]   Temp: {temp}°C")
+                                # Warn if GPU is throttled
+                                try:
+                                    if float(curr_clock) < float(max_clock) * 0.8:
+                                        print(f"[SCG_LocalVLM]   WARNING: GPU clock throttled!")
+                                except ValueError:
+                                    pass
+                    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                        pass  # nvidia-smi not available or failed
+
                     # Check for memory fragmentation (large gap between allocated and reserved)
                     fragmentation = reserved_mb - allocated_mb
                     if fragmentation > 1000:  # More than 1GB gap
                         print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
 
-                    # SDPA backend diagnostics
+                    # SDPA backend diagnostics - PyTorch 2.x API
                     try:
-                        from torch.backends.cuda import (
-                            is_flash_sdp_available,
-                            flash_sdp_enabled,
-                            mem_efficient_sdp_enabled,
-                            math_sdp_enabled,
-                        )
+                        import torch.backends.cuda as cuda_backend
                         print(f"[SCG_LocalVLM] SDPA Backend Status:")
-                        print(f"[SCG_LocalVLM]   Flash SDP available: {is_flash_sdp_available()}")
-                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_efficient_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_sdp_enabled()}")
-                    except ImportError:
-                        print("[SCG_LocalVLM] SDPA backend info not available (older PyTorch)")
+                        # Check which backends are enabled
+                        flash_enabled = getattr(cuda_backend, 'flash_sdp_enabled', lambda: None)()
+                        mem_eff_enabled = getattr(cuda_backend, 'mem_efficient_sdp_enabled', lambda: None)()
+                        math_enabled = getattr(cuda_backend, 'math_sdp_enabled', lambda: None)()
+                        cudnn_enabled = getattr(cuda_backend, 'cudnn_sdp_enabled', lambda: None)()
+
+                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
+                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
+                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
+                        print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
+
+                        # Warn if only math backend is available (slowest)
+                        if math_enabled and not flash_enabled and not mem_eff_enabled:
+                            print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
+                    except Exception as e:
+                        print(f"[SCG_LocalVLM] SDPA backend info error: {e}")
 
                 gen_start = time.time()
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
@@ -1315,26 +1344,55 @@ class Qwen:
                     print(f"[SCG_LocalVLM]   Reserved: {reserved_mb:.1f} MB")
                     print(f"[SCG_LocalVLM]   Peak allocated: {max_allocated_mb:.1f} MB")
 
+                    # GPU clock and power state diagnostics
+                    try:
+                        result = subprocess.run(
+                            ["nvidia-smi", "--query-gpu=clocks.current.graphics,clocks.max.graphics,power.draw,power.limit,temperature.gpu",
+                             "--format=csv,noheader,nounits"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if result.returncode == 0:
+                            parts = [p.strip() for p in result.stdout.strip().split(',')]
+                            if len(parts) >= 5:
+                                curr_clock, max_clock, power_draw, power_limit, temp = parts[:5]
+                                print(f"[SCG_LocalVLM] GPU State:")
+                                print(f"[SCG_LocalVLM]   Clock: {curr_clock}/{max_clock} MHz")
+                                print(f"[SCG_LocalVLM]   Power: {power_draw}/{power_limit} W")
+                                print(f"[SCG_LocalVLM]   Temp: {temp}°C")
+                                # Warn if GPU is throttled
+                                try:
+                                    if float(curr_clock) < float(max_clock) * 0.8:
+                                        print(f"[SCG_LocalVLM]   WARNING: GPU clock throttled!")
+                                except ValueError:
+                                    pass
+                    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                        pass  # nvidia-smi not available or failed
+
                     # Check for memory fragmentation (large gap between allocated and reserved)
                     fragmentation = reserved_mb - allocated_mb
                     if fragmentation > 1000:  # More than 1GB gap
                         print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
 
-                    # SDPA backend diagnostics
+                    # SDPA backend diagnostics - PyTorch 2.x API
                     try:
-                        from torch.backends.cuda import (
-                            is_flash_sdp_available,
-                            flash_sdp_enabled,
-                            mem_efficient_sdp_enabled,
-                            math_sdp_enabled,
-                        )
+                        import torch.backends.cuda as cuda_backend
                         print(f"[SCG_LocalVLM] SDPA Backend Status:")
-                        print(f"[SCG_LocalVLM]   Flash SDP available: {is_flash_sdp_available()}")
-                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_efficient_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_sdp_enabled()}")
-                    except ImportError:
-                        print("[SCG_LocalVLM] SDPA backend info not available (older PyTorch)")
+                        # Check which backends are enabled
+                        flash_enabled = getattr(cuda_backend, 'flash_sdp_enabled', lambda: None)()
+                        mem_eff_enabled = getattr(cuda_backend, 'mem_efficient_sdp_enabled', lambda: None)()
+                        math_enabled = getattr(cuda_backend, 'math_sdp_enabled', lambda: None)()
+                        cudnn_enabled = getattr(cuda_backend, 'cudnn_sdp_enabled', lambda: None)()
+
+                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
+                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
+                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
+                        print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
+
+                        # Warn if only math backend is available (slowest)
+                        if math_enabled and not flash_enabled and not mem_eff_enabled:
+                            print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
+                    except Exception as e:
+                        print(f"[SCG_LocalVLM] SDPA backend info error: {e}")
 
                 gen_start = time.time()
 
