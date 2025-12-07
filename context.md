@@ -411,3 +411,23 @@ Added nvidia-smi based GPU monitoring to detect throttling:
 - Previous code used `is_flash_sdp_available()` which doesn't exist in PyTorch 2.x
 - Updated to use correct functions: `flash_sdp_enabled()`, `mem_efficient_sdp_enabled()`, etc.
 - Added `cudnn_sdp_enabled()` for newer PyTorch versions
+
+### GPU Warmup Fix (2025-12-07)
+
+**Root cause confirmed:** GPU diagnostics showed:
+- Unload mode runs: GPU at 390-502 MHz (idle) → 3-9 tok/s
+- Keep mode runs: GPU at 2970+ MHz (boost) → 18-20 tok/s
+
+When model unloads, GPU drops to idle state. Reloading doesn't trigger clock boost.
+Generation starts while GPU is still ramping up, causing massive slowdown.
+
+**Fix:** Added `_warmup_gpu()` function that runs small matmul operations after
+model loading to force GPU to boost clocks before generation starts.
+
+```python
+def _warmup_gpu():
+    # Run 2048x2048 matmul 3x to trigger GPU boost
+    # Completes in ~50-100ms, ensures GPU at full speed
+```
+
+This should provide consistent ~20 tok/s regardless of model reload state.
