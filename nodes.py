@@ -76,6 +76,33 @@ if _GPU_NAME:
     print(f"[SCG_LocalVLM] GPU: {_GPU_NAME} (SM {_GPU_COMPUTE_CAP})")
 
 
+def _warmup_gpu():
+    """Force GPU to boost clock speeds before generation.
+
+    When a model is unloaded, the GPU drops to idle state (low clock speeds).
+    Reloading the model doesn't immediately boost the clock. This function
+    runs a small compute workload to force the GPU to ramp up before the
+    actual generation, ensuring consistent performance.
+    """
+    if not torch.cuda.is_available():
+        return
+
+    try:
+        warmup_start = time.time()
+        # Run a small matmul to wake up the GPU - large enough to trigger boost
+        # but small enough to complete quickly
+        size = 2048
+        a = torch.randn(size, size, device='cuda', dtype=torch.float16)
+        b = torch.randn(size, size, device='cuda', dtype=torch.float16)
+        for _ in range(3):  # Multiple iterations to ensure clock ramps up
+            c = torch.matmul(a, b)
+        torch.cuda.synchronize()
+        del a, b, c
+        warmup_time = time.time() - warmup_start
+        print(f"[SCG_LocalVLM] GPU warmup completed in {warmup_time:.3f}s")
+    except Exception as e:
+        print(f"[SCG_LocalVLM] GPU warmup failed (non-critical): {e}")
+
 
 # --- Custom Models Loading ---
 CUSTOM_MODELS_FILE = os.path.join(os.path.dirname(__file__), "custom_models.json")
@@ -652,6 +679,10 @@ class QwenVL:
             # Save to class-level cache for instance persistence
             self._save_to_cache()
 
+            # Warmup GPU to ensure clock is boosted before generation
+            # This prevents slowdown when GPU was idle after model unload
+            _warmup_gpu()
+
         processed_video_path = None
         result = None
 
@@ -823,26 +854,22 @@ class QwenVL:
                     if fragmentation > 1000:  # More than 1GB gap
                         print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
 
-                    # SDPA backend diagnostics - PyTorch 2.x API
-                    try:
-                        import torch.backends.cuda as cuda_backend
-                        print(f"[SCG_LocalVLM] SDPA Backend Status:")
-                        # Check which backends are enabled
-                        flash_enabled = getattr(cuda_backend, 'flash_sdp_enabled', lambda: None)()
-                        mem_eff_enabled = getattr(cuda_backend, 'mem_efficient_sdp_enabled', lambda: None)()
-                        math_enabled = getattr(cuda_backend, 'math_sdp_enabled', lambda: None)()
-                        cudnn_enabled = getattr(cuda_backend, 'cudnn_sdp_enabled', lambda: None)()
+                    # SDPA backend diagnostics (PyTorch 2.0+)
+                    print(f"[SCG_LocalVLM] SDPA Backend Status:")
+                    flash_enabled = torch.backends.cuda.flash_sdp_enabled()
+                    mem_eff_enabled = torch.backends.cuda.mem_efficient_sdp_enabled()
+                    math_enabled = torch.backends.cuda.math_sdp_enabled()
+                    # cudnn_sdp_enabled added in PyTorch 2.1+
+                    cudnn_enabled = getattr(torch.backends.cuda, 'cudnn_sdp_enabled', lambda: False)()
 
-                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
-                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
-                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
-                        print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
+                    print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
+                    print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
+                    print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
+                    print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
 
-                        # Warn if only math backend is available (slowest)
-                        if math_enabled and not flash_enabled and not mem_eff_enabled:
-                            print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
-                    except Exception as e:
-                        print(f"[SCG_LocalVLM] SDPA backend info error: {e}")
+                    # Warn if only math backend is available (slowest)
+                    if math_enabled and not flash_enabled and not mem_eff_enabled:
+                        print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
 
                 gen_start = time.time()
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
@@ -1289,6 +1316,10 @@ class Qwen:
             # Save to class-level cache for instance persistence
             self._save_to_cache()
 
+            # Warmup GPU to ensure clock is boosted before generation
+            # This prevents slowdown when GPU was idle after model unload
+            _warmup_gpu()
+
         result = None
         with torch.inference_mode():
             messages = [
@@ -1373,26 +1404,22 @@ class Qwen:
                     if fragmentation > 1000:  # More than 1GB gap
                         print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
 
-                    # SDPA backend diagnostics - PyTorch 2.x API
-                    try:
-                        import torch.backends.cuda as cuda_backend
-                        print(f"[SCG_LocalVLM] SDPA Backend Status:")
-                        # Check which backends are enabled
-                        flash_enabled = getattr(cuda_backend, 'flash_sdp_enabled', lambda: None)()
-                        mem_eff_enabled = getattr(cuda_backend, 'mem_efficient_sdp_enabled', lambda: None)()
-                        math_enabled = getattr(cuda_backend, 'math_sdp_enabled', lambda: None)()
-                        cudnn_enabled = getattr(cuda_backend, 'cudnn_sdp_enabled', lambda: None)()
+                    # SDPA backend diagnostics (PyTorch 2.0+)
+                    print(f"[SCG_LocalVLM] SDPA Backend Status:")
+                    flash_enabled = torch.backends.cuda.flash_sdp_enabled()
+                    mem_eff_enabled = torch.backends.cuda.mem_efficient_sdp_enabled()
+                    math_enabled = torch.backends.cuda.math_sdp_enabled()
+                    # cudnn_sdp_enabled added in PyTorch 2.1+
+                    cudnn_enabled = getattr(torch.backends.cuda, 'cudnn_sdp_enabled', lambda: False)()
 
-                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
-                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
-                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
-                        print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
+                    print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
+                    print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
+                    print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
+                    print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
 
-                        # Warn if only math backend is available (slowest)
-                        if math_enabled and not flash_enabled and not mem_eff_enabled:
-                            print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
-                    except Exception as e:
-                        print(f"[SCG_LocalVLM] SDPA backend info error: {e}")
+                    # Warn if only math backend is available (slowest)
+                    if math_enabled and not flash_enabled and not mem_eff_enabled:
+                        print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
 
                 gen_start = time.time()
 
