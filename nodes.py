@@ -79,17 +79,15 @@ if _GPU_NAME:
 class TimingStreamer:
     """Streamer that records token generation times to identify bottlenecks."""
 
-    def __init__(self):
+    def __init__(self, gen_start_time):
+        self.gen_start_time = gen_start_time  # Set externally before generate()
         self.first_token_time = None
         self.last_token_time = None
         self.token_count = 0
-        self.start_time = None
 
     def put(self, value):
         """Called when a token is generated."""
         now = time.time()
-        if self.start_time is None:
-            self.start_time = now
         if self.first_token_time is None:
             self.first_token_time = now
         self.last_token_time = now
@@ -101,10 +99,10 @@ class TimingStreamer:
 
     def get_timing_stats(self):
         """Return timing statistics."""
-        if self.first_token_time is None or self.start_time is None:
+        if self.first_token_time is None or self.gen_start_time is None:
             return None
 
-        prefill_time = self.first_token_time - self.start_time
+        prefill_time = self.first_token_time - self.gen_start_time
         if self.token_count > 1 and self.last_token_time:
             decode_time = self.last_token_time - self.first_token_time
             decode_tokens = self.token_count - 1  # First token is from prefill
@@ -884,11 +882,28 @@ class QwenVL:
                     if math_enabled and not flash_enabled and not mem_eff_enabled:
                         print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
 
+                # Try static cache to avoid dynamic allocation during decode
+                # This can help prevent stalls from KV cache reallocation
+                try:
+                    from transformers import StaticCache
+                    # Pre-allocate cache for max_new_tokens
+                    static_cache = StaticCache(
+                        config=self.model.config,
+                        batch_size=1,
+                        max_cache_len=inputs.input_ids.shape[1] + max_new_tokens,
+                        device=self.model.device,
+                        dtype=self.model.dtype,
+                    )
+                    generation_kwargs["past_key_values"] = static_cache
+                    print(f"[SCG_LocalVLM] Using static KV cache (pre-allocated)")
+                except (ImportError, Exception) as e:
+                    print(f"[SCG_LocalVLM] Using dynamic KV cache: {e}")
+
                 # Create timing streamer to measure prefill vs decode
-                timing_streamer = TimingStreamer()
+                gen_start = time.time()
+                timing_streamer = TimingStreamer(gen_start)
                 generation_kwargs["streamer"] = timing_streamer
 
-                gen_start = time.time()
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
 
                 # Sync after generation for accurate timing
