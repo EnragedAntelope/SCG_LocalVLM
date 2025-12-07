@@ -358,8 +358,8 @@ class QwenVL:
                     {"default": "none"},
                 ),
                 "attention_mode": (
-                    ["auto", "flash_attention_2", "sdpa", "eager"],
-                    {"default": "auto"},
+                    ["sdpa", "flash_attention_2", "eager"],
+                    {"default": "sdpa"},
                 ),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
                 "bypass": ("BOOLEAN", {"default": False}),
@@ -539,10 +539,10 @@ class QwenVL:
                 attention_used = "eager"
                 print("[SCG_LocalVLM] Using eager attention")
             else:
-                # auto - use sdpa as default (best compatibility + good performance)
+                # Default to sdpa if somehow an invalid value
                 load_kwargs["attn_implementation"] = "sdpa"
                 attention_used = "sdpa"
-                print("[SCG_LocalVLM] Using SDPA attention (auto)")
+                print("[SCG_LocalVLM] Using SDPA attention")
 
             # Load the model
             model_class = _get_model_class(model, is_vl=True)
@@ -957,8 +957,8 @@ class Qwen:
                     {"default": "none"},
                 ),
                 "attention_mode": (
-                    ["auto", "flash_attention_2", "sdpa", "eager"],
-                    {"default": "auto"},
+                    ["sdpa", "flash_attention_2", "eager"],
+                    {"default": "sdpa"},
                 ),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
                 "bypass": ("BOOLEAN", {"default": False}),
