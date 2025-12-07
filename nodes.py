@@ -794,6 +794,30 @@ class QwenVL:
                     print(f"[SCG_LocalVLM]   Reserved: {reserved_mb:.1f} MB")
                     print(f"[SCG_LocalVLM]   Peak allocated: {max_allocated_mb:.1f} MB")
 
+                    # GPU clock and power state diagnostics
+                    try:
+                        result = subprocess.run(
+                            ["nvidia-smi", "--query-gpu=clocks.current.graphics,clocks.max.graphics,power.draw,power.limit,temperature.gpu",
+                             "--format=csv,noheader,nounits"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if result.returncode == 0:
+                            parts = [p.strip() for p in result.stdout.strip().split(',')]
+                            if len(parts) >= 5:
+                                curr_clock, max_clock, power_draw, power_limit, temp = parts[:5]
+                                print(f"[SCG_LocalVLM] GPU State:")
+                                print(f"[SCG_LocalVLM]   Clock: {curr_clock}/{max_clock} MHz")
+                                print(f"[SCG_LocalVLM]   Power: {power_draw}/{power_limit} W")
+                                print(f"[SCG_LocalVLM]   Temp: {temp}°C")
+                                # Warn if GPU is throttled
+                                try:
+                                    if float(curr_clock) < float(max_clock) * 0.8:
+                                        print(f"[SCG_LocalVLM]   WARNING: GPU clock throttled!")
+                                except ValueError:
+                                    pass
+                    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                        pass  # nvidia-smi not available or failed
+
                     # Check for memory fragmentation (large gap between allocated and reserved)
                     fragmentation = reserved_mb - allocated_mb
                     if fragmentation > 1000:  # More than 1GB gap
@@ -1319,6 +1343,30 @@ class Qwen:
                     print(f"[SCG_LocalVLM]   Allocated: {allocated_mb:.1f} MB")
                     print(f"[SCG_LocalVLM]   Reserved: {reserved_mb:.1f} MB")
                     print(f"[SCG_LocalVLM]   Peak allocated: {max_allocated_mb:.1f} MB")
+
+                    # GPU clock and power state diagnostics
+                    try:
+                        result = subprocess.run(
+                            ["nvidia-smi", "--query-gpu=clocks.current.graphics,clocks.max.graphics,power.draw,power.limit,temperature.gpu",
+                             "--format=csv,noheader,nounits"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if result.returncode == 0:
+                            parts = [p.strip() for p in result.stdout.strip().split(',')]
+                            if len(parts) >= 5:
+                                curr_clock, max_clock, power_draw, power_limit, temp = parts[:5]
+                                print(f"[SCG_LocalVLM] GPU State:")
+                                print(f"[SCG_LocalVLM]   Clock: {curr_clock}/{max_clock} MHz")
+                                print(f"[SCG_LocalVLM]   Power: {power_draw}/{power_limit} W")
+                                print(f"[SCG_LocalVLM]   Temp: {temp}°C")
+                                # Warn if GPU is throttled
+                                try:
+                                    if float(curr_clock) < float(max_clock) * 0.8:
+                                        print(f"[SCG_LocalVLM]   WARNING: GPU clock throttled!")
+                                except ValueError:
+                                    pass
+                    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                        pass  # nvidia-smi not available or failed
 
                     # Check for memory fragmentation (large gap between allocated and reserved)
                     fragmentation = reserved_mb - allocated_mb
