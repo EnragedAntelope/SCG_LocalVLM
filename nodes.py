@@ -96,21 +96,43 @@ def _warmup_gpu():
     torch.backends.cuda.enable_mem_efficient_sdp(True)
     torch.backends.cuda.enable_math_sdp(True)  # Fallback
 
-    # Run compute workload to wake up GPU
-    # Use a shape similar to attention to warm up relevant kernels
+    # Run aggressive warmup with multiple SDPA calls at different sizes
+    # This ensures all relevant CUDA kernels are compiled and GPU is at full power
     try:
-        # Simulate attention-like operation
-        batch, heads, seq, dim = 1, 32, 512, 64
-        q = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
-        k = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
-        v = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
+        # Multiple warmup iterations at vision-language relevant sizes
+        sizes = [
+            (1, 32, 256, 64),   # Small attention
+            (1, 32, 512, 64),   # Medium attention
+            (1, 32, 1024, 64),  # Larger attention (similar to VL models)
+        ]
 
-        # Run SDPA directly to warm up those kernels
-        for _ in range(3):
-            out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        for batch, heads, seq, dim in sizes:
+            q = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
+            k = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
+            v = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
+
+            # Run SDPA multiple times to ensure GPU is fully engaged
+            for _ in range(5):
+                out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+            del q, k, v, out
 
         torch.cuda.synchronize()
-        del q, k, v, out
+
+        # Check GPU state after warmup
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=clocks.current.graphics,power.draw",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0:
+                parts = [p.strip() for p in result.stdout.strip().split(',')]
+                if len(parts) >= 2:
+                    print(f"[SCG_LocalVLM] GPU after warmup: {parts[0]} MHz, {parts[1]}W")
+        except Exception:
+            pass
+
     except Exception as e:
         print(f"[SCG_LocalVLM] GPU warmup error (non-critical): {e}")
 
