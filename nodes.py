@@ -785,6 +785,36 @@ class QwenVL:
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
 
+                    # CUDA memory diagnostics
+                    allocated_mb = torch.cuda.memory_allocated() / 1024**2
+                    reserved_mb = torch.cuda.memory_reserved() / 1024**2
+                    max_allocated_mb = torch.cuda.max_memory_allocated() / 1024**2
+                    print(f"[SCG_LocalVLM] CUDA Memory before generation:")
+                    print(f"[SCG_LocalVLM]   Allocated: {allocated_mb:.1f} MB")
+                    print(f"[SCG_LocalVLM]   Reserved: {reserved_mb:.1f} MB")
+                    print(f"[SCG_LocalVLM]   Peak allocated: {max_allocated_mb:.1f} MB")
+
+                    # Check for memory fragmentation (large gap between allocated and reserved)
+                    fragmentation = reserved_mb - allocated_mb
+                    if fragmentation > 1000:  # More than 1GB gap
+                        print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
+
+                    # SDPA backend diagnostics
+                    try:
+                        from torch.backends.cuda import (
+                            is_flash_sdp_available,
+                            flash_sdp_enabled,
+                            mem_efficient_sdp_enabled,
+                            math_sdp_enabled,
+                        )
+                        print(f"[SCG_LocalVLM] SDPA Backend Status:")
+                        print(f"[SCG_LocalVLM]   Flash SDP available: {is_flash_sdp_available()}")
+                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_sdp_enabled()}")
+                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_efficient_sdp_enabled()}")
+                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_sdp_enabled()}")
+                    except ImportError:
+                        print("[SCG_LocalVLM] SDPA backend info not available (older PyTorch)")
+
                 gen_start = time.time()
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
 
@@ -1272,11 +1302,47 @@ class Qwen:
                 if repetition_penalty != 1.0:
                     generation_kwargs["repetition_penalty"] = repetition_penalty
 
-                # Start timing
-                import time
+                # Sync CUDA before timing for accuracy
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
+                    # CUDA memory diagnostics
+                    allocated_mb = torch.cuda.memory_allocated() / 1024**2
+                    reserved_mb = torch.cuda.memory_reserved() / 1024**2
+                    max_allocated_mb = torch.cuda.max_memory_allocated() / 1024**2
+                    print(f"[SCG_LocalVLM] CUDA Memory before generation:")
+                    print(f"[SCG_LocalVLM]   Allocated: {allocated_mb:.1f} MB")
+                    print(f"[SCG_LocalVLM]   Reserved: {reserved_mb:.1f} MB")
+                    print(f"[SCG_LocalVLM]   Peak allocated: {max_allocated_mb:.1f} MB")
+
+                    # Check for memory fragmentation (large gap between allocated and reserved)
+                    fragmentation = reserved_mb - allocated_mb
+                    if fragmentation > 1000:  # More than 1GB gap
+                        print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
+
+                    # SDPA backend diagnostics
+                    try:
+                        from torch.backends.cuda import (
+                            is_flash_sdp_available,
+                            flash_sdp_enabled,
+                            mem_efficient_sdp_enabled,
+                            math_sdp_enabled,
+                        )
+                        print(f"[SCG_LocalVLM] SDPA Backend Status:")
+                        print(f"[SCG_LocalVLM]   Flash SDP available: {is_flash_sdp_available()}")
+                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_sdp_enabled()}")
+                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_efficient_sdp_enabled()}")
+                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_sdp_enabled()}")
+                    except ImportError:
+                        print("[SCG_LocalVLM] SDPA backend info not available (older PyTorch)")
+
                 gen_start = time.time()
 
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
+
+                # Sync after generation for accurate timing
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
 
                 # Calculate performance
                 gen_time = time.time() - gen_start

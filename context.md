@@ -356,3 +356,37 @@ With detailed timing added, we identified:
 - Run prompts one at a time, not in rapid succession
 - Ensure no other GPU-intensive nodes running during generation
 - Keep model loaded (default is now True)
+
+### Enhanced Diagnostics (2025-12-07)
+
+Added CUDA memory and SDPA backend diagnostics to help identify remaining variance.
+
+**New Diagnostic Output:**
+```
+[SCG_LocalVLM] CUDA Memory before generation:
+[SCG_LocalVLM]   Allocated: XXXX.X MB
+[SCG_LocalVLM]   Reserved: XXXX.X MB
+[SCG_LocalVLM]   Peak allocated: XXXX.X MB
+[SCG_LocalVLM]   WARNING: High memory fragmentation (if > 1GB gap)
+[SCG_LocalVLM] SDPA Backend Status:
+[SCG_LocalVLM]   Flash SDP available: True/False
+[SCG_LocalVLM]   Flash SDP enabled: True/False
+[SCG_LocalVLM]   Memory-efficient SDP enabled: True/False
+[SCG_LocalVLM]   Math SDP enabled: True/False
+```
+
+**What to Look For:**
+1. **Memory Fragmentation**: Large gap between allocated and reserved memory indicates fragmentation, which can cause inconsistent performance
+2. **SDPA Backend Mismatch**: If Flash SDP is unavailable/disabled but expected, this could cause slowdowns
+3. **Peak vs Current**: Large difference suggests memory pressure from previous operations
+
+**Potential Causes of Remaining Variance:**
+- GPU thermal throttling (check GPU temp with `nvidia-smi`)
+- Power state fluctuations (GPU may downclock when "idle")
+- CUDA memory fragmentation from other processes
+- SDPA backend fallback to math (slow) kernel
+- Background system processes competing for GPU
+
+**Added to Both Classes:**
+- QwenVL: nodes.py lines 788-816
+- Qwen: nodes.py lines 1305-1337
