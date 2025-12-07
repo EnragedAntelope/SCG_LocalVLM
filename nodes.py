@@ -199,15 +199,6 @@ def _get_text_model_list():
     return BUILTIN_TEXT_MODELS + list(CUSTOM_TEXT_MODELS.keys())
 
 
-def _maybe_move_to_cpu(module):
-    if module is None:
-        return
-    try:
-        module.to("cpu")
-    except Exception:
-        pass
-
-
 def _clear_cuda_memory():
     gc.collect()
     if torch.cuda.is_available():
@@ -260,6 +251,15 @@ class QwenVL:
     ComfyUI v2/v3 compatible.
     """
 
+    # Class-level model cache to survive instance recreation
+    # ComfyUI may create new node instances between executions
+    _cached_model = None
+    _cached_processor = None
+    _cached_model_name = None
+    _cached_quantization = None
+    _cached_attention_mode = None
+    _cached_checkpoint = None
+
     def __init__(self):
         self.model_checkpoint = None
         self.processor = None
@@ -276,15 +276,50 @@ class QwenVL:
         self._loaded_quantization = None
         self._loaded_attention_mode = None
 
+        # Restore from class-level cache if available
+        if QwenVL._cached_model is not None:
+            self.model = QwenVL._cached_model
+            self.processor = QwenVL._cached_processor
+            self.model_checkpoint = QwenVL._cached_checkpoint
+            self._loaded_model_name = QwenVL._cached_model_name
+            self._loaded_quantization = QwenVL._cached_quantization
+            self._loaded_attention_mode = QwenVL._cached_attention_mode
+
     def _unload_resources(self):
-        _maybe_move_to_cpu(self.model)
+        # Ensure all CUDA operations complete before cleanup
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        # Explicitly delete model reference to help garbage collector
+        # Note: Do NOT move model to CPU first - this wastes memory and time
+        if self.model is not None:
+            del self.model
         self.model = None
         self.processor = None
-        # Clear configuration tracking
+
+        # Clear instance-level configuration tracking
         self._loaded_model_name = None
         self._loaded_quantization = None
         self._loaded_attention_mode = None
+
+        # Clear class-level cache
+        QwenVL._cached_model = None
+        QwenVL._cached_processor = None
+        QwenVL._cached_model_name = None
+        QwenVL._cached_quantization = None
+        QwenVL._cached_attention_mode = None
+        QwenVL._cached_checkpoint = None
+
         _clear_cuda_memory()
+
+    def _save_to_cache(self):
+        """Save current model to class-level cache for instance persistence."""
+        QwenVL._cached_model = self.model
+        QwenVL._cached_processor = self.processor
+        QwenVL._cached_checkpoint = self.model_checkpoint
+        QwenVL._cached_model_name = self._loaded_model_name
+        QwenVL._cached_quantization = self._loaded_quantization
+        QwenVL._cached_attention_mode = self._loaded_attention_mode
 
     def _config_changed(self, model, quantization, attention_mode):
         """Check if the requested configuration differs from the loaded model."""
@@ -326,7 +361,7 @@ class QwenVL:
                     ["auto", "flash_attention_2", "sdpa", "eager"],
                     {"default": "auto"},
                 ),
-                "keep_model_loaded": ("BOOLEAN", {"default": False}),
+                "keep_model_loaded": ("BOOLEAN", {"default": True}),
                 "bypass": ("BOOLEAN", {"default": False}),
                 "do_sample": ("BOOLEAN", {"default": True}),
                 "temperature": (
@@ -594,13 +629,16 @@ class QwenVL:
             self._loaded_quantization = quantization
             self._loaded_attention_mode = attention_mode
 
+            # Save to class-level cache for instance persistence
+            self._save_to_cache()
+
         processed_video_path = None
         result = None
 
         with torch.inference_mode():
             # Build user content list - images first (in order), then text
             user_content = []
-            
+
             # Process images in order: image1, image2, image3, image4
             images = [image1, image2, image3, image4]
             image_count = 0
@@ -771,6 +809,15 @@ class Qwen:
     ComfyUI v2/v3 compatible.
     """
 
+    # Class-level model cache to survive instance recreation
+    # ComfyUI may create new node instances between executions
+    _cached_model = None
+    _cached_tokenizer = None
+    _cached_model_name = None
+    _cached_quantization = None
+    _cached_attention_mode = None
+    _cached_checkpoint = None
+
     def __init__(self):
         self.model_checkpoint = None
         self.tokenizer = None
@@ -787,15 +834,50 @@ class Qwen:
         self._loaded_quantization = None
         self._loaded_attention_mode = None
 
+        # Restore from class-level cache if available
+        if Qwen._cached_model is not None:
+            self.model = Qwen._cached_model
+            self.tokenizer = Qwen._cached_tokenizer
+            self.model_checkpoint = Qwen._cached_checkpoint
+            self._loaded_model_name = Qwen._cached_model_name
+            self._loaded_quantization = Qwen._cached_quantization
+            self._loaded_attention_mode = Qwen._cached_attention_mode
+
     def _unload_resources(self):
-        _maybe_move_to_cpu(self.model)
+        # Ensure all CUDA operations complete before cleanup
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        # Explicitly delete model reference to help garbage collector
+        # Note: Do NOT move model to CPU first - this wastes memory and time
+        if self.model is not None:
+            del self.model
         self.model = None
         self.tokenizer = None
-        # Clear configuration tracking
+
+        # Clear instance-level configuration tracking
         self._loaded_model_name = None
         self._loaded_quantization = None
         self._loaded_attention_mode = None
+
+        # Clear class-level cache
+        Qwen._cached_model = None
+        Qwen._cached_tokenizer = None
+        Qwen._cached_model_name = None
+        Qwen._cached_quantization = None
+        Qwen._cached_attention_mode = None
+        Qwen._cached_checkpoint = None
+
         _clear_cuda_memory()
+
+    def _save_to_cache(self):
+        """Save current model to class-level cache for instance persistence."""
+        Qwen._cached_model = self.model
+        Qwen._cached_tokenizer = self.tokenizer
+        Qwen._cached_checkpoint = self.model_checkpoint
+        Qwen._cached_model_name = self._loaded_model_name
+        Qwen._cached_quantization = self._loaded_quantization
+        Qwen._cached_attention_mode = self._loaded_attention_mode
 
     def _config_changed(self, model, quantization, attention_mode):
         """Check if the requested configuration differs from the loaded model."""
@@ -837,7 +919,7 @@ class Qwen:
                     ["auto", "flash_attention_2", "sdpa", "eager"],
                     {"default": "auto"},
                 ),
-                "keep_model_loaded": ("BOOLEAN", {"default": False}),
+                "keep_model_loaded": ("BOOLEAN", {"default": True}),
                 "bypass": ("BOOLEAN", {"default": False}),
                 "do_sample": ("BOOLEAN", {"default": True}),
                 "temperature": (
@@ -1063,6 +1145,9 @@ class Qwen:
             self._loaded_model_name = model
             self._loaded_quantization = quantization
             self._loaded_attention_mode = attention_mode
+
+            # Save to class-level cache for instance persistence
+            self._save_to_cache()
 
         result = None
         with torch.inference_mode():
