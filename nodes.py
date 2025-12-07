@@ -77,31 +77,45 @@ if _GPU_NAME:
 
 
 def _warmup_gpu():
-    """Force GPU to boost clock speeds before generation.
+    """Force GPU to boost clock speeds and warm up SDPA kernels.
 
-    When a model is unloaded, the GPU drops to idle state (low clock speeds).
-    Reloading the model doesn't immediately boost the clock. This function
-    runs a small compute workload to force the GPU to ramp up before the
-    actual generation, ensuring consistent performance.
+    When a model is unloaded, the GPU drops to idle state. This function
+    runs compute to wake up the GPU before the actual generation.
+
+    Note: We also explicitly enable preferred SDPA backends here to ensure
+    consistent kernel selection across runs.
     """
     if not torch.cuda.is_available():
         return
 
+    warmup_start = time.time()
+
+    # Explicitly enable preferred SDPA backends (PyTorch 2.0+)
+    # This ensures consistent kernel selection after model reload
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_math_sdp(True)  # Fallback
+
+    # Run compute workload to wake up GPU
+    # Use a shape similar to attention to warm up relevant kernels
     try:
-        warmup_start = time.time()
-        # Run a small matmul to wake up the GPU - large enough to trigger boost
-        # but small enough to complete quickly
-        size = 2048
-        a = torch.randn(size, size, device='cuda', dtype=torch.float16)
-        b = torch.randn(size, size, device='cuda', dtype=torch.float16)
-        for _ in range(3):  # Multiple iterations to ensure clock ramps up
-            c = torch.matmul(a, b)
+        # Simulate attention-like operation
+        batch, heads, seq, dim = 1, 32, 512, 64
+        q = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
+        k = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
+        v = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
+
+        # Run SDPA directly to warm up those kernels
+        for _ in range(3):
+            out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
         torch.cuda.synchronize()
-        del a, b, c
-        warmup_time = time.time() - warmup_start
-        print(f"[SCG_LocalVLM] GPU warmup completed in {warmup_time:.3f}s")
+        del q, k, v, out
     except Exception as e:
-        print(f"[SCG_LocalVLM] GPU warmup failed (non-critical): {e}")
+        print(f"[SCG_LocalVLM] GPU warmup error (non-critical): {e}")
+
+    warmup_time = time.time() - warmup_start
+    print(f"[SCG_LocalVLM] GPU warmup (SDPA) completed in {warmup_time:.3f}s")
 
 
 # --- Custom Models Loading ---
@@ -894,14 +908,27 @@ class QwenVL:
                     print(f"[SCG_LocalVLM]   Total time: {gen_time:.2f}s")
                     print(f"[SCG_LocalVLM]   Speed: {tokens_per_sec:.2f} tokens/sec")
 
+                    # GPU state AFTER generation - to see if it throttled during
+                    try:
+                        result_post = subprocess.run(
+                            ["nvidia-smi", "--query-gpu=clocks.current.graphics,power.draw,temperature.gpu",
+                             "--format=csv,noheader,nounits"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if result_post.returncode == 0:
+                            parts = [p.strip() for p in result_post.stdout.strip().split(',')]
+                            if len(parts) >= 3:
+                                print(f"[SCG_LocalVLM]   GPU after: {parts[0]} MHz, {parts[1]}W, {parts[2]}°C")
+                    except Exception:
+                        pass
+
                     # Performance warning for slow generation
-                    if tokens_per_sec < 5:
-                        print(f"[SCG_LocalVLM] WARNING: Generation unusually slow!")
-                        print(f"[SCG_LocalVLM]   Expected: 10-20 tok/s on modern GPU")
-                        print(f"[SCG_LocalVLM]   Possible issues:")
-                        print(f"[SCG_LocalVLM]     - Check GPU utilization (nvidia-smi)")
-                        print(f"[SCG_LocalVLM]     - Large image = many vision tokens = slow prefill")
-                        print(f"[SCG_LocalVLM]     - Try reducing image resolution")
+                    if tokens_per_sec < 10:
+                        print(f"[SCG_LocalVLM] WARNING: Generation slow ({tokens_per_sec:.1f} tok/s)")
+                        # Check CUDA memory state for fragmentation clues
+                        post_alloc = torch.cuda.memory_allocated() / 1024**2
+                        post_reserved = torch.cuda.memory_reserved() / 1024**2
+                        print(f"[SCG_LocalVLM]   Post-gen memory: {post_alloc:.1f}/{post_reserved:.1f} MB (alloc/reserved)")
 
                 result = self.processor.batch_decode(
                     generated_ids_trimmed,
@@ -1445,6 +1472,20 @@ class Qwen:
                     print(f"[SCG_LocalVLM]   Tokens: {tokens_generated}")
                     print(f"[SCG_LocalVLM]   Time: {gen_time:.2f}s")
                     print(f"[SCG_LocalVLM]   Speed: {tokens_per_sec:.2f} tokens/sec")
+
+                    # GPU state AFTER generation
+                    try:
+                        result_post = subprocess.run(
+                            ["nvidia-smi", "--query-gpu=clocks.current.graphics,power.draw,temperature.gpu",
+                             "--format=csv,noheader,nounits"],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if result_post.returncode == 0:
+                            parts = [p.strip() for p in result_post.stdout.strip().split(',')]
+                            if len(parts) >= 3:
+                                print(f"[SCG_LocalVLM]   GPU after: {parts[0]} MHz, {parts[1]}W, {parts[2]}°C")
+                    except Exception:
+                        pass
 
                 result = self.tokenizer.batch_decode(
                     generated_ids_trimmed,
