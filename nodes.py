@@ -799,21 +799,26 @@ class QwenVL:
                     if fragmentation > 1000:  # More than 1GB gap
                         print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
 
-                    # SDPA backend diagnostics
+                    # SDPA backend diagnostics - PyTorch 2.x API
                     try:
-                        from torch.backends.cuda import (
-                            is_flash_sdp_available,
-                            flash_sdp_enabled,
-                            mem_efficient_sdp_enabled,
-                            math_sdp_enabled,
-                        )
+                        import torch.backends.cuda as cuda_backend
                         print(f"[SCG_LocalVLM] SDPA Backend Status:")
-                        print(f"[SCG_LocalVLM]   Flash SDP available: {is_flash_sdp_available()}")
-                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_efficient_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_sdp_enabled()}")
-                    except ImportError:
-                        print("[SCG_LocalVLM] SDPA backend info not available (older PyTorch)")
+                        # Check which backends are enabled
+                        flash_enabled = getattr(cuda_backend, 'flash_sdp_enabled', lambda: None)()
+                        mem_eff_enabled = getattr(cuda_backend, 'mem_efficient_sdp_enabled', lambda: None)()
+                        math_enabled = getattr(cuda_backend, 'math_sdp_enabled', lambda: None)()
+                        cudnn_enabled = getattr(cuda_backend, 'cudnn_sdp_enabled', lambda: None)()
+
+                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
+                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
+                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
+                        print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
+
+                        # Warn if only math backend is available (slowest)
+                        if math_enabled and not flash_enabled and not mem_eff_enabled:
+                            print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
+                    except Exception as e:
+                        print(f"[SCG_LocalVLM] SDPA backend info error: {e}")
 
                 gen_start = time.time()
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
@@ -1320,21 +1325,26 @@ class Qwen:
                     if fragmentation > 1000:  # More than 1GB gap
                         print(f"[SCG_LocalVLM]   WARNING: High memory fragmentation ({fragmentation:.0f} MB)")
 
-                    # SDPA backend diagnostics
+                    # SDPA backend diagnostics - PyTorch 2.x API
                     try:
-                        from torch.backends.cuda import (
-                            is_flash_sdp_available,
-                            flash_sdp_enabled,
-                            mem_efficient_sdp_enabled,
-                            math_sdp_enabled,
-                        )
+                        import torch.backends.cuda as cuda_backend
                         print(f"[SCG_LocalVLM] SDPA Backend Status:")
-                        print(f"[SCG_LocalVLM]   Flash SDP available: {is_flash_sdp_available()}")
-                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_efficient_sdp_enabled()}")
-                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_sdp_enabled()}")
-                    except ImportError:
-                        print("[SCG_LocalVLM] SDPA backend info not available (older PyTorch)")
+                        # Check which backends are enabled
+                        flash_enabled = getattr(cuda_backend, 'flash_sdp_enabled', lambda: None)()
+                        mem_eff_enabled = getattr(cuda_backend, 'mem_efficient_sdp_enabled', lambda: None)()
+                        math_enabled = getattr(cuda_backend, 'math_sdp_enabled', lambda: None)()
+                        cudnn_enabled = getattr(cuda_backend, 'cudnn_sdp_enabled', lambda: None)()
+
+                        print(f"[SCG_LocalVLM]   Flash SDP enabled: {flash_enabled}")
+                        print(f"[SCG_LocalVLM]   Memory-efficient SDP enabled: {mem_eff_enabled}")
+                        print(f"[SCG_LocalVLM]   Math SDP enabled: {math_enabled}")
+                        print(f"[SCG_LocalVLM]   cuDNN SDP enabled: {cudnn_enabled}")
+
+                        # Warn if only math backend is available (slowest)
+                        if math_enabled and not flash_enabled and not mem_eff_enabled:
+                            print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
+                    except Exception as e:
+                        print(f"[SCG_LocalVLM] SDPA backend info error: {e}")
 
                 gen_start = time.time()
 
