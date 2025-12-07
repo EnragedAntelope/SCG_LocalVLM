@@ -882,23 +882,6 @@ class QwenVL:
                     if math_enabled and not flash_enabled and not mem_eff_enabled:
                         print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
 
-                # Try static cache to avoid dynamic allocation during decode
-                # This can help prevent stalls from KV cache reallocation
-                try:
-                    from transformers import StaticCache
-                    # Pre-allocate cache for max_new_tokens
-                    static_cache = StaticCache(
-                        config=self.model.config,
-                        batch_size=1,
-                        max_cache_len=inputs.input_ids.shape[1] + max_new_tokens,
-                        device=self.model.device,
-                        dtype=self.model.dtype,
-                    )
-                    generation_kwargs["past_key_values"] = static_cache
-                    print(f"[SCG_LocalVLM] Using static KV cache (pre-allocated)")
-                except (ImportError, Exception) as e:
-                    print(f"[SCG_LocalVLM] Using dynamic KV cache: {e}")
-
                 # Create timing streamer to measure prefill vs decode
                 gen_start = time.time()
                 timing_streamer = TimingStreamer(gen_start)
