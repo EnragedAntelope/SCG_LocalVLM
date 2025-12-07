@@ -642,6 +642,7 @@ class QwenVL:
             # Process images in order: image1, image2, image3, image4
             images = [image1, image2, image3, image4]
             image_count = 0
+            img_convert_start = time.time()
             for idx, img in enumerate(images, start=1):
                 if img is not None:
                     print(f"Processing image{idx}")
@@ -651,9 +652,10 @@ class QwenVL:
                         "image": pil_image,
                     })
                     image_count += 1
-            
+
             if image_count > 0:
-                print(f"Total images added: {image_count}")
+                img_convert_time = time.time() - img_convert_start
+                print(f"Total images added: {image_count} (conversion: {img_convert_time:.3f}s)")
 
             try:
                 # Handle video if provided (takes precedence positioning but images still included)
@@ -685,20 +687,49 @@ class QwenVL:
                     {"role": "user", "content": user_content},
                 ]
 
+                # Time: apply_chat_template
+                template_start = time.time()
                 text = self.processor.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
                 )
-                print("deal messages", messages)
+                template_time = time.time() - template_start
+                print(f"[SCG_LocalVLM] Template applied in {template_time:.3f}s")
+
+                # Time: process_vision_info
+                vision_start = time.time()
                 image_inputs, video_inputs = process_vision_info(messages)
-                
-                # Process inputs on CPU first
+                vision_time = time.time() - vision_start
+                print(f"[SCG_LocalVLM] Vision info processed in {vision_time:.3f}s")
+
+                # Time: processor call (tokenization + image preprocessing)
+                proc_start = time.time()
                 inputs = self.processor(
                     text=[text],
                     images=image_inputs,
                     videos=video_inputs,
                     padding=True,
                     return_tensors="pt",
-                ).to(self.model.device)
+                )
+                proc_time = time.time() - proc_start
+                print(f"[SCG_LocalVLM] Processor completed in {proc_time:.3f}s")
+
+                # Log input shapes for debugging
+                if hasattr(inputs, 'pixel_values') and inputs.pixel_values is not None:
+                    pv_shape = inputs.pixel_values.shape
+                    print(f"[SCG_LocalVLM] pixel_values shape: {pv_shape}")
+                    # Total elements gives sense of data size
+                    print(f"[SCG_LocalVLM] Image tensor total elements: {inputs.pixel_values.numel():,}")
+                if hasattr(inputs, 'input_ids'):
+                    print(f"[SCG_LocalVLM] input_ids shape: {inputs.input_ids.shape}")
+
+                # Time: move to device
+                move_start = time.time()
+                inputs = inputs.to(self.model.device)
+                # Force sync to get accurate timing
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                move_time = time.time() - move_start
+                print(f"[SCG_LocalVLM] Moved to device in {move_time:.3f}s")
 
                 # Build generation kwargs with optimal settings
                 generation_kwargs = {
@@ -730,8 +761,16 @@ class QwenVL:
                 if repetition_penalty != 1.0:
                     generation_kwargs["repetition_penalty"] = repetition_penalty
 
+                # Sync CUDA before timing generation for accuracy
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
                 gen_start = time.time()
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
+
+                # Sync after generation for accurate timing
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
                 gen_time = time.time() - gen_start
 
                 generated_ids_trimmed = [
@@ -739,22 +778,24 @@ class QwenVL:
                 ]
 
                 # Calculate tokens/sec
+                input_tokens = inputs.input_ids.shape[1] if hasattr(inputs, 'input_ids') else 0
                 if len(generated_ids_trimmed) > 0:
                     tokens_generated = len(generated_ids_trimmed[0])
                     tokens_per_sec = tokens_generated / gen_time if gen_time > 0 else 0
                     print(f"[SCG_LocalVLM] Generation Performance:")
-                    print(f"[SCG_LocalVLM]   Tokens: {tokens_generated}")
-                    print(f"[SCG_LocalVLM]   Time: {gen_time:.2f}s")
+                    print(f"[SCG_LocalVLM]   Input tokens: {input_tokens}")
+                    print(f"[SCG_LocalVLM]   Output tokens: {tokens_generated}")
+                    print(f"[SCG_LocalVLM]   Total time: {gen_time:.2f}s")
                     print(f"[SCG_LocalVLM]   Speed: {tokens_per_sec:.2f} tokens/sec")
-                    
-                    # Add performance analysis
-                    if quantization == "4bit" and tokens_per_sec < 10:
-                        print(f"[SCG_LocalVLM] WARNING: 4bit performance unusually slow!")
-                        print(f"[SCG_LocalVLM] Expected: 40-60 tok/s, Got: {tokens_per_sec:.2f} tok/s")
-                        print(f"[SCG_LocalVLM] Possible issues:")
-                        print(f"[SCG_LocalVLM]   - Quantization kernels not properly compiled")
-                        print(f"[SCG_LocalVLM]   - CUDA/PyTorch version mismatch")
-                        print(f"[SCG_LocalVLM]   - Try: pip install bitsandbytes --upgrade")
+
+                    # Performance warning for slow generation
+                    if tokens_per_sec < 5:
+                        print(f"[SCG_LocalVLM] WARNING: Generation unusually slow!")
+                        print(f"[SCG_LocalVLM]   Expected: 10-20 tok/s on modern GPU")
+                        print(f"[SCG_LocalVLM]   Possible issues:")
+                        print(f"[SCG_LocalVLM]     - Check GPU utilization (nvidia-smi)")
+                        print(f"[SCG_LocalVLM]     - Large image = many vision tokens = slow prefill")
+                        print(f"[SCG_LocalVLM]     - Try reducing image resolution")
 
                 result = self.processor.batch_decode(
                     generated_ids_trimmed,
