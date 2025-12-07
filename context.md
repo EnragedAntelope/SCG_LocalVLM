@@ -387,6 +387,27 @@ Added CUDA memory and SDPA backend diagnostics to help identify remaining varian
 - SDPA backend fallback to math (slow) kernel
 - Background system processes competing for GPU
 
-**Added to Both Classes:**
-- QwenVL: nodes.py lines 788-816
-- Qwen: nodes.py lines 1305-1337
+### GPU State Monitoring (2025-12-07)
+
+Added nvidia-smi based GPU monitoring to detect throttling:
+```
+[SCG_LocalVLM] GPU State:
+[SCG_LocalVLM]   Clock: 2100/2520 MHz
+[SCG_LocalVLM]   Power: 280/450 W
+[SCG_LocalVLM]   Temp: 65°C
+[SCG_LocalVLM]   WARNING: GPU clock throttled!  (if below 80% of max)
+```
+
+**Hypothesis from Latest Test Run:**
+- Runs 2-4 showed progressive degradation (20→7→8.7→4.7 tok/s) during unload cycles
+- Run 5 suddenly recovered (18.4 tok/s) even while still reloading
+- Runs 6-8 stayed fast (17-19 tok/s) with model kept
+- The recovery after Run 4's very slow 74s generation suggests GPU power state issue:
+  - GPU may have been in low-power state during quick reloads
+  - Long generation in Run 4 brought GPU to full power
+  - Run 5 benefited from GPU already being at full power
+
+**Fixed SDPA API:**
+- Previous code used `is_flash_sdp_available()` which doesn't exist in PyTorch 2.x
+- Updated to use correct functions: `flash_sdp_enabled()`, `mem_efficient_sdp_enabled()`, etc.
+- Added `cudnn_sdp_enabled()` for newer PyTorch versions
