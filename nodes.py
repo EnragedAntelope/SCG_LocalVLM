@@ -76,68 +76,49 @@ if _GPU_NAME:
     print(f"[SCG_LocalVLM] GPU: {_GPU_NAME} (SM {_GPU_COMPUTE_CAP})")
 
 
-def _warmup_gpu():
-    """Force GPU to boost clock speeds and warm up SDPA kernels.
+class TimingStreamer:
+    """Streamer that records token generation times to identify bottlenecks."""
 
-    When a model is unloaded, the GPU drops to idle state. This function
-    runs compute to wake up the GPU before the actual generation.
+    def __init__(self):
+        self.first_token_time = None
+        self.last_token_time = None
+        self.token_count = 0
+        self.start_time = None
 
-    Note: We also explicitly enable preferred SDPA backends here to ensure
-    consistent kernel selection across runs.
-    """
-    if not torch.cuda.is_available():
-        return
+    def put(self, value):
+        """Called when a token is generated."""
+        now = time.time()
+        if self.start_time is None:
+            self.start_time = now
+        if self.first_token_time is None:
+            self.first_token_time = now
+        self.last_token_time = now
+        self.token_count += 1
 
-    warmup_start = time.time()
+    def end(self):
+        """Called when generation is complete."""
+        pass
 
-    # Explicitly enable preferred SDPA backends (PyTorch 2.0+)
-    # This ensures consistent kernel selection after model reload
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.enable_math_sdp(True)  # Fallback
+    def get_timing_stats(self):
+        """Return timing statistics."""
+        if self.first_token_time is None or self.start_time is None:
+            return None
 
-    # Run aggressive warmup with multiple SDPA calls at different sizes
-    # This ensures all relevant CUDA kernels are compiled and GPU is at full power
-    try:
-        # Multiple warmup iterations at vision-language relevant sizes
-        sizes = [
-            (1, 32, 256, 64),   # Small attention
-            (1, 32, 512, 64),   # Medium attention
-            (1, 32, 1024, 64),  # Larger attention (similar to VL models)
-        ]
+        prefill_time = self.first_token_time - self.start_time
+        if self.token_count > 1 and self.last_token_time:
+            decode_time = self.last_token_time - self.first_token_time
+            decode_tokens = self.token_count - 1  # First token is from prefill
+            decode_tok_per_sec = decode_tokens / decode_time if decode_time > 0 else 0
+        else:
+            decode_time = 0
+            decode_tok_per_sec = 0
 
-        for batch, heads, seq, dim in sizes:
-            q = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
-            k = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
-            v = torch.randn(batch, heads, seq, dim, device='cuda', dtype=torch.bfloat16)
-
-            # Run SDPA multiple times to ensure GPU is fully engaged
-            for _ in range(5):
-                out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
-
-            del q, k, v, out
-
-        torch.cuda.synchronize()
-
-        # Check GPU state after warmup
-        try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=clocks.current.graphics,power.draw",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0:
-                parts = [p.strip() for p in result.stdout.strip().split(',')]
-                if len(parts) >= 2:
-                    print(f"[SCG_LocalVLM] GPU after warmup: {parts[0]} MHz, {parts[1]}W")
-        except Exception:
-            pass
-
-    except Exception as e:
-        print(f"[SCG_LocalVLM] GPU warmup error (non-critical): {e}")
-
-    warmup_time = time.time() - warmup_start
-    print(f"[SCG_LocalVLM] GPU warmup (SDPA) completed in {warmup_time:.3f}s")
+        return {
+            'prefill_time': prefill_time,
+            'decode_time': decode_time,
+            'decode_tok_per_sec': decode_tok_per_sec,
+            'total_tokens': self.token_count
+        }
 
 
 # --- Custom Models Loading ---
@@ -715,10 +696,6 @@ class QwenVL:
             # Save to class-level cache for instance persistence
             self._save_to_cache()
 
-            # Warmup GPU to ensure clock is boosted before generation
-            # This prevents slowdown when GPU was idle after model unload
-            _warmup_gpu()
-
         processed_video_path = None
         result = None
 
@@ -907,6 +884,10 @@ class QwenVL:
                     if math_enabled and not flash_enabled and not mem_eff_enabled:
                         print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
 
+                # Create timing streamer to measure prefill vs decode
+                timing_streamer = TimingStreamer()
+                generation_kwargs["streamer"] = timing_streamer
+
                 gen_start = time.time()
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)
 
@@ -929,6 +910,13 @@ class QwenVL:
                     print(f"[SCG_LocalVLM]   Output tokens: {tokens_generated}")
                     print(f"[SCG_LocalVLM]   Total time: {gen_time:.2f}s")
                     print(f"[SCG_LocalVLM]   Speed: {tokens_per_sec:.2f} tokens/sec")
+
+                    # Show prefill vs decode timing breakdown
+                    timing_stats = timing_streamer.get_timing_stats()
+                    if timing_stats:
+                        print(f"[SCG_LocalVLM]   Prefill (TTFT): {timing_stats['prefill_time']:.2f}s")
+                        print(f"[SCG_LocalVLM]   Decode time: {timing_stats['decode_time']:.2f}s")
+                        print(f"[SCG_LocalVLM]   Decode speed: {timing_stats['decode_tok_per_sec']:.2f} tok/s")
 
                     # GPU state AFTER generation - to see if it throttled during
                     try:
@@ -1364,10 +1352,6 @@ class Qwen:
 
             # Save to class-level cache for instance persistence
             self._save_to_cache()
-
-            # Warmup GPU to ensure clock is boosted before generation
-            # This prevents slowdown when GPU was idle after model unload
-            _warmup_gpu()
 
         result = None
         with torch.inference_mode():
