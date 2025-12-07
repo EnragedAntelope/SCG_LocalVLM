@@ -286,15 +286,14 @@ class QwenVL:
             self._loaded_attention_mode = QwenVL._cached_attention_mode
 
     def _unload_resources(self):
-        # Ensure all CUDA operations complete before cleanup
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        # Explicitly delete model reference to help garbage collector
+        # Explicitly delete model and processor to release CUDA memory
         # Note: Do NOT move model to CPU first - this wastes memory and time
         if self.model is not None:
             del self.model
         self.model = None
+
+        if self.processor is not None:
+            del self.processor
         self.processor = None
 
         # Clear instance-level configuration tracking
@@ -310,7 +309,28 @@ class QwenVL:
         QwenVL._cached_attention_mode = None
         QwenVL._cached_checkpoint = None
 
-        _clear_cuda_memory()
+        # Force Python garbage collection (run twice for reference cycles)
+        gc.collect()
+        gc.collect()
+
+        # Now clear CUDA memory after Python has released references
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        # Let ComfyUI do its cleanup
+        if comfy_mm is not None:
+            try:
+                soft_empty = getattr(comfy_mm, "soft_empty_cache", None)
+                if callable(soft_empty):
+                    params = inspect.signature(soft_empty).parameters
+                    if "force" in params:
+                        soft_empty(force=True)
+                    else:
+                        soft_empty()
+            except Exception:
+                pass
 
     def _save_to_cache(self):
         """Save current model to class-level cache for instance persistence."""
@@ -885,15 +905,14 @@ class Qwen:
             self._loaded_attention_mode = Qwen._cached_attention_mode
 
     def _unload_resources(self):
-        # Ensure all CUDA operations complete before cleanup
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        # Explicitly delete model reference to help garbage collector
+        # Explicitly delete model and tokenizer to release CUDA memory
         # Note: Do NOT move model to CPU first - this wastes memory and time
         if self.model is not None:
             del self.model
         self.model = None
+
+        if self.tokenizer is not None:
+            del self.tokenizer
         self.tokenizer = None
 
         # Clear instance-level configuration tracking
@@ -909,7 +928,28 @@ class Qwen:
         Qwen._cached_attention_mode = None
         Qwen._cached_checkpoint = None
 
-        _clear_cuda_memory()
+        # Force Python garbage collection (run twice for reference cycles)
+        gc.collect()
+        gc.collect()
+
+        # Now clear CUDA memory after Python has released references
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        # Let ComfyUI do its cleanup
+        if comfy_mm is not None:
+            try:
+                soft_empty = getattr(comfy_mm, "soft_empty_cache", None)
+                if callable(soft_empty):
+                    params = inspect.signature(soft_empty).parameters
+                    if "force" in params:
+                        soft_empty(force=True)
+                    else:
+                        soft_empty()
+            except Exception:
+                pass
 
     def _save_to_cache(self):
         """Save current model to class-level cache for instance persistence."""
