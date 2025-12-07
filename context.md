@@ -331,3 +331,28 @@ Performance varied 2.76x between runs. Model loading time also varied from 4s to
 2. **Faster repeated inference**: Model stays loaded between runs
 3. **Cleaner memory management**: Proper CUDA cleanup without fragmentation
 4. **Instance persistence**: Model survives ComfyUI instance recreation
+
+### Diagnostic Session Results (2025-12-07)
+
+With detailed timing added, we identified:
+
+**Normal Performance (model kept loaded):**
+- 12-14 tok/s consistently
+- First run: 14.55 tok/s
+- Preprocessing: <0.05s total (negligible)
+- All time spent in model.generate()
+
+**Random Slowdowns (3-7 tok/s):**
+- Correlate with "got prompt" messages during generation
+- ComfyUI's prompt processing interferes with CUDA operations
+- External to node code - cannot fully fix from within the node
+
+**Attention Mode Changes:**
+- Removed "auto" option (was just mapping to "sdpa")
+- Default changed from "auto" to "sdpa" directly
+- Options now: sdpa, flash_attention_2, eager
+
+**Workarounds for Slowdowns:**
+- Run prompts one at a time, not in rapid succession
+- Ensure no other GPU-intensive nodes running during generation
+- Keep model loaded (default is now True)
