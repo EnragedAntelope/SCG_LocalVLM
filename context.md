@@ -1,7 +1,7 @@
 # ComfyUI_QwenVL Optimization Project - Context
 
-**Last Updated:** 2025-12-05
-**Branch:** `claude/implement-fixes-enhancements-01Cxt5wVVQY4yqXMYnr3Q8ax`
+**Last Updated:** 2025-12-07
+**Branch:** `claude/fix-node-performance-019PjwcjTqhGhsy2NsVNp81x`
 
 ## Project Overview
 
@@ -247,3 +247,87 @@ After implementing fixes:
 ### Qwen Text Model
 - Same optimizations NOT yet applied (edit tool issues during session)
 - TODO: Apply same device_map and FA2 changes to Qwen text class
+
+## Performance Fix Session (2025-12-07)
+
+### Problem Analysis
+
+User reported wildly inconsistent performance:
+- Run 1: 3.30 tokens/sec, 117.85s for 389 tokens
+- Run 2: 7.60 tokens/sec, 28.15s for 214 tokens
+- Run 3: 2.75 tokens/sec, 145.67s for 400 tokens
+- Run 4: 5.29 tokens/sec, 74.80s for 396 tokens
+
+Performance varied 2.76x between runs. Model loading time also varied from 4s to 16s.
+
+### Root Causes Identified
+
+1. **`_maybe_move_to_cpu()` anti-pattern**: Before deleting the model, code was moving it to CPU first:
+   ```python
+   def _maybe_move_to_cpu(module):
+       module.to("cpu")  # BAD: Copies entire model to CPU just to delete it
+   ```
+   This:
+   - Allocates CPU RAM unnecessarily
+   - Creates memory fragmentation on GPU
+   - Doesn't properly release CUDA memory
+   - Causes wildly varying inference speeds
+
+2. **Model reloading every run**: Default `keep_model_loaded=False` caused the model to unload after each inference, triggering the fragmentation cycle.
+
+3. **No class-level caching**: ComfyUI may create new node instances between executions. Without class-level caching, the model couldn't persist even with `keep_model_loaded=True`.
+
+### Previous Failed Fixes (Reference)
+- Commit 3008136: "Aggressive CUDA cleanup" - BROKE things (overly aggressive)
+- Commit 4f5bcdb: "Attempted revert" - Still had issues
+- Commit 98a311e: "Hard reset to 00122d3" - Reverted to known working state
+
+### Fix Implementation
+
+1. **Removed `_maybe_move_to_cpu()` function entirely**
+   - Don't move model to CPU before deletion - this is wasteful
+   - Just delete the model reference and let Python handle it
+
+2. **Added CUDA synchronization before cleanup**
+   ```python
+   if torch.cuda.is_available():
+       torch.cuda.synchronize()
+   ```
+   Ensures all CUDA operations complete before memory cleanup.
+
+3. **Changed default `keep_model_loaded` to `True`**
+   - More sensible default for most users
+   - Avoids repeated load/unload cycles
+   - User can still set to False if needed for memory constraints
+
+4. **Added class-level model caching**
+   - Model stored at class level, not just instance level
+   - Survives ComfyUI creating new node instances
+   - Automatically restores cached model to new instances
+
+### Code Changes Summary
+
+**Removed:**
+- `_maybe_move_to_cpu()` function
+
+**Modified `_unload_resources()` (both classes):**
+- Added `torch.cuda.synchronize()` before cleanup
+- Removed CPU move step
+- Added explicit `del self.model` for cleaner gc
+- Added class-level cache clearing
+
+**Added to both classes:**
+- Class-level cache variables (`_cached_model`, `_cached_processor/tokenizer`, etc.)
+- `_save_to_cache()` method
+- Cache restoration in `__init__()`
+- Cache save after model loading
+
+**Changed defaults:**
+- `keep_model_loaded`: `False` → `True`
+
+### Expected Improvements
+
+1. **Consistent performance**: No more 2-3x variance between runs
+2. **Faster repeated inference**: Model stays loaded between runs
+3. **Cleaner memory management**: Proper CUDA cleanup without fragmentation
+4. **Instance persistence**: Model survives ComfyUI instance recreation
