@@ -424,10 +424,30 @@ Generation starts while GPU is still ramping up, causing massive slowdown.
 **Fix:** Added `_warmup_gpu()` function that runs small matmul operations after
 model loading to force GPU to boost clocks before generation starts.
 
-```python
-def _warmup_gpu():
-    # Run 2048x2048 matmul 3x to trigger GPU boost
-    # Completes in ~50-100ms, ensures GPU at full speed
-```
+### Further Analysis (2025-12-07)
 
-This should provide consistent ~20 tok/s regardless of model reload state.
+**Matmul warmup was ineffective:**
+- Completed in 0.001s (impossible for 3x 2048x2048 matmuls)
+- On first run: 0.074s (CUDA initialization overhead)
+- On subsequent runs: 0.001s (already initialized, no real work)
+
+**Clock speed is NOT the cause:**
+| Run | Clock Before | Tok/s |
+|-----|--------------|-------|
+| 2 | 990 MHz | **19.85** (FASTEST) |
+| 5 | 1117 MHz | **5.64** (SLOWEST) |
+
+Higher clock with worse performance proves clock isn't the issue.
+The pre-generation clock reading is misleading - GPU ramps up during inference.
+
+**New warmup approach:**
+- Use actual SDPA kernels instead of matmul (different CUDA code paths)
+- Explicitly enable SDPA backends for consistent kernel selection
+- Add post-generation GPU state logging to catch throttling during inference
+
+**Remaining hypotheses:**
+1. SDPA backend selection differs after empty_cache()
+2. CUDA memory allocator fragmentation patterns
+3. JIT kernel caching being invalidated
+4. PyTorch internal state (attention caches, etc.)
+5. Something in HuggingFace generate() that's stateful
