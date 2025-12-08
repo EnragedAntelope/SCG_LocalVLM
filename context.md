@@ -451,3 +451,83 @@ The pre-generation clock reading is misleading - GPU ramps up during inference.
 3. JIT kernel caching being invalidated
 4. PyTorch internal state (attention caches, etc.)
 5. Something in HuggingFace generate() that's stateful
+
+## Critical Findings from Research (2025-12-08)
+
+### Root Cause: HuggingFace generate() Single CPU Core Bottleneck
+
+**Source:** [GitHub Issue #24524](https://github.com/huggingface/transformers/issues/24524)
+
+The `model.generate()` method has a **single CPU core bottleneck**. Even when all weights are on GPU:
+- htop shows ONE CPU core maxed at 100% during generation
+- nvidia-smi shows VRAM correctly allocated
+- But GPU is waiting for Python to coordinate each token generation step
+
+This explains the "peaks and valleys" in CUDA utilization - GPU does work, waits for Python, does work, waits...
+
+### Known Issue: Qwen3-VL Slower Than Qwen2.5-VL
+
+**Source:** [GitHub Issue #1657](https://github.com/QwenLM/Qwen3-VL/issues/1657)
+
+Qwen3-VL is inherently slower than Qwen2.5-VL under the same conditions due to architectural changes:
+- Enhanced MRope with interleaved layout
+- DeepStack integration for multi-level ViT features
+
+Qwen team recommends:
+1. Enable Flash Attention 2 (especially for multi-image/video)
+2. Use vLLM or SGLang for production deployment
+3. Consider FP8 quantized versions
+
+### RTX 5090 Blackwell Compatibility Issues
+
+**Sources:**
+- [PyTorch Issue #159207](https://github.com/pytorch/pytorch/issues/159207)
+- [NVIDIA Forums](https://forums.developer.nvidia.com/t/rtx-5090-not-working-with-pytorch-and-stable-diffusion-sm-120-unsupported/338015)
+
+RTX 5090 (SM 120/Blackwell) has incomplete PyTorch support:
+- PyTorch 2.4.x runs with "severe limitations"
+- Operations may run in "compatibility mode with poor performance"
+- Need PyTorch 2.5.0+ for usable Blackwell support
+- Flash Attention 2 kernels may not be optimized for SM 120
+
+### The Solution: torch.compile + Static KV Cache
+
+**Source:** [HuggingFace LLM Optimization Guide](https://huggingface.co/docs/transformers/en/llm_optims)
+
+The dynamic KV cache grows with each token, which:
+- Prevents torch.compile from optimizing the code
+- Causes Python overhead on every token
+- Results in the 4-10 tok/s we're seeing
+
+**The fix:**
+```python
+# Enable static KV cache
+model.generation_config.cache_implementation = "static"
+
+# Compile the forward pass
+model.forward = torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)
+```
+
+This can provide **up to 4x speedup** by:
+- Pre-allocating KV cache to max size (no dynamic allocation)
+- Compiling model into CUDA graphs (eliminating Python overhead)
+- Using "reduce-overhead" mode to minimize Python-related overhead
+
+### Failed Attempts Log
+
+| Date | Attempt | Result |
+|------|---------|--------|
+| 2025-12-07 | Removed _maybe_move_to_cpu() | Partial improvement |
+| 2025-12-07 | Added class-level caching | Partial improvement |
+| 2025-12-07 | Matmul GPU warmup | FAILED - wrong kernels (0.001s) |
+| 2025-12-07 | SDPA-based warmup | FAILED - still 0.001s |
+| 2025-12-08 | Removed erosdiffusion node | FAILED - no improvement |
+| 2025-12-08 | StaticCache pre-allocation | FAILED - cudaMallocAsync error (conflict with other node) |
+| 2025-12-08 | CUDA kernel warmup via generate() | FAILED - still variable performance |
+
+### Next Steps
+
+1. **Add per-token timing** - Log timestamp for each token to identify stall patterns
+2. **Implement torch.compile + static cache** - The documented solution
+3. **Test with PyTorch nightly** - May have better Blackwell support
+4. **Consider vLLM integration** - If torch.compile doesn't work
