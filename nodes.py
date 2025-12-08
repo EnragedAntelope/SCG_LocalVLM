@@ -77,19 +77,21 @@ if _GPU_NAME:
 
 
 class TimingStreamer:
-    """Streamer that records token generation times to identify bottlenecks."""
+    """Streamer that records per-token generation times to identify bottlenecks."""
 
     def __init__(self, gen_start_time):
         self.gen_start_time = gen_start_time  # Set externally before generate()
         self.first_token_time = None
         self.last_token_time = None
         self.token_count = 0
+        self.token_times = []  # Per-token timestamps for stall analysis
 
     def put(self, value):
         """Called when a token is generated."""
         now = time.time()
         if self.first_token_time is None:
             self.first_token_time = now
+        self.token_times.append(now)
         self.last_token_time = now
         self.token_count += 1
 
@@ -98,7 +100,7 @@ class TimingStreamer:
         pass
 
     def get_timing_stats(self):
-        """Return timing statistics."""
+        """Return timing statistics including per-token analysis."""
         if self.first_token_time is None or self.gen_start_time is None:
             return None
 
@@ -111,11 +113,37 @@ class TimingStreamer:
             decode_time = 0
             decode_tok_per_sec = 0
 
+        # Per-token timing analysis
+        token_intervals = []
+        stalls = []  # Intervals > 2x median
+        if len(self.token_times) > 1:
+            for i in range(1, len(self.token_times)):
+                interval = self.token_times[i] - self.token_times[i-1]
+                token_intervals.append(interval)
+
+            if token_intervals:
+                sorted_intervals = sorted(token_intervals)
+                median_interval = sorted_intervals[len(sorted_intervals) // 2]
+                min_interval = sorted_intervals[0]
+                max_interval = sorted_intervals[-1]
+
+                # Find stalls (>2x median)
+                stall_threshold = median_interval * 2
+                for i, interval in enumerate(token_intervals):
+                    if interval > stall_threshold:
+                        stalls.append((i + 1, interval))  # Token index, duration
+
         return {
             'prefill_time': prefill_time,
             'decode_time': decode_time,
             'decode_tok_per_sec': decode_tok_per_sec,
-            'total_tokens': self.token_count
+            'total_tokens': self.token_count,
+            'token_intervals': token_intervals,
+            'min_interval': min(token_intervals) if token_intervals else 0,
+            'max_interval': max(token_intervals) if token_intervals else 0,
+            'median_interval': sorted(token_intervals)[len(token_intervals) // 2] if token_intervals else 0,
+            'stalls': stalls,
+            'stall_count': len(stalls),
         }
 
 
@@ -691,34 +719,10 @@ class QwenVL:
             self._loaded_quantization = quantization
             self._loaded_attention_mode = attention_mode
 
-            # Warmup: trigger CUDA kernel JIT compilation to avoid slow first inference
-            # This runs a small forward pass to compile attention kernels for typical sizes
-            try:
-                warmup_start = time.time()
-                print("[SCG_LocalVLM] Running CUDA kernel warmup...")
-
-                with torch.inference_mode():
-                    # Create minimal dummy inputs that trigger the same code paths
-                    # Use sequence lengths that will trigger kernel compilation
-                    dummy_input_ids = torch.ones((1, 128), dtype=torch.long, device=self.model.device)
-
-                    # Run a short generation to warm up both prefill and decode kernels
-                    _ = self.model.generate(
-                        input_ids=dummy_input_ids,
-                        max_new_tokens=8,  # Just a few tokens to trigger decode loop
-                        do_sample=False,
-                        use_cache=True,
-                        pad_token_id=self.processor.tokenizer.pad_token_id if hasattr(self.processor, 'tokenizer') else 0,
-                    )
-
-                    # Sync to ensure kernels are fully compiled
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-
-                warmup_time = time.time() - warmup_start
-                print(f"[SCG_LocalVLM] Warmup completed in {warmup_time:.2f}s")
-            except Exception as e:
-                print(f"[SCG_LocalVLM] Warmup failed (non-fatal): {e}")
+            # NOTE: torch.compile is NOT compatible with Qwen VL models
+            # The image encoder has dynamic operations that break torch.export/compile
+            # See: https://github.com/vllm-project/vllm/issues/16320
+            # For faster inference, use vLLM/SGLang instead of HuggingFace transformers
 
             # Save to class-level cache for instance persistence
             self._save_to_cache()
@@ -944,6 +948,15 @@ class QwenVL:
                         print(f"[SCG_LocalVLM]   Prefill (TTFT): {timing_stats['prefill_time']:.2f}s")
                         print(f"[SCG_LocalVLM]   Decode time: {timing_stats['decode_time']:.2f}s")
                         print(f"[SCG_LocalVLM]   Decode speed: {timing_stats['decode_tok_per_sec']:.2f} tok/s")
+                        # Per-token timing analysis
+                        if timing_stats.get('median_interval'):
+                            print(f"[SCG_LocalVLM]   Token intervals: min={timing_stats['min_interval']*1000:.1f}ms, median={timing_stats['median_interval']*1000:.1f}ms, max={timing_stats['max_interval']*1000:.1f}ms")
+                            if timing_stats['stall_count'] > 0:
+                                stall_total = sum(s[1] for s in timing_stats['stalls'])
+                                print(f"[SCG_LocalVLM]   STALLS DETECTED: {timing_stats['stall_count']} stalls totaling {stall_total:.2f}s")
+                                # Show first few stalls
+                                for idx, duration in timing_stats['stalls'][:5]:
+                                    print(f"[SCG_LocalVLM]     Token {idx}: {duration*1000:.1f}ms stall")
 
                     # GPU state AFTER generation - to see if it throttled during
                     try:
