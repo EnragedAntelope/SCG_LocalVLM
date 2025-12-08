@@ -524,10 +524,47 @@ This can provide **up to 4x speedup** by:
 | 2025-12-08 | Removed erosdiffusion node | FAILED - no improvement |
 | 2025-12-08 | StaticCache pre-allocation | FAILED - cudaMallocAsync error (conflict with other node) |
 | 2025-12-08 | CUDA kernel warmup via generate() | FAILED - still variable performance |
+| 2025-12-08 | torch.compile + static cache | NOT APPLICABLE - Qwen VL models incompatible with torch.compile |
 
-### Next Steps
+### torch.compile Incompatibility (2025-12-08)
 
-1. **Add per-token timing** - Log timestamp for each token to identify stall patterns
-2. **Implement torch.compile + static cache** - The documented solution
-3. **Test with PyTorch nightly** - May have better Blackwell support
-4. **Consider vLLM integration** - If torch.compile doesn't work
+**Critical Finding:** torch.compile is NOT compatible with Qwen VL models.
+
+**Source:** [vLLM Issue #16320](https://github.com/vllm-project/vllm/issues/16320)
+> "Qwen2.5-VL image encoder compilation is not supported due to dynamic operations incompatible with torch.export."
+
+Additional issues:
+- `mode="reduce-overhead"` with static cache is "known to fail" per [HF docs](https://huggingface.co/docs/transformers/en/llm_optims)
+- Static cache alone provides no speedup without torch.compile ([HF Issue #30055](https://github.com/huggingface/transformers/issues/30055))
+- For model unload scenarios, compilation would add 30-60s overhead per run
+
+### The Honest Assessment
+
+**There is no easy fix within HuggingFace transformers for the CPU bottleneck.**
+
+The `generate()` function has inherent Python overhead (single CPU core bottleneck, [Issue #24524](https://github.com/huggingface/transformers/issues/24524)). This issue is still open with no fix.
+
+### Viable Solutions
+
+1. **Use `keep_model_loaded=True`** (RECOMMENDED)
+   - Already achieves ~18-20 tok/s consistently
+   - Avoids unload/reload overhead that triggers worst performance
+   - Simple, no external dependencies
+
+2. **Use vLLM/SGLang** (for production/high-throughput)
+   - Purpose-built for fast inference
+   - Avoids HuggingFace generate() bottleneck entirely
+   - Requires vLLM>=0.11.0 for Qwen3-VL support
+   - Would require significant architecture change to this node
+
+3. **Accept the limitation**
+   - HuggingFace transformers prioritizes flexibility over speed
+   - The performance variance with model unloading may be unavoidable
+   - Per-token timing diagnostics added to help understand behavior
+
+### Current Status (2025-12-08)
+
+- Removed broken torch.compile implementation
+- Added per-token timing diagnostics (min/median/max intervals, stall detection)
+- Documented all findings and failed attempts
+- Recommendation: Use `keep_model_loaded=True` for best experience

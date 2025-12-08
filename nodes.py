@@ -719,31 +719,10 @@ class QwenVL:
             self._loaded_quantization = quantization
             self._loaded_attention_mode = attention_mode
 
-            # Apply torch.compile optimization for faster generation
-            # This compiles the forward pass into optimized CUDA graphs
-            # Reference: https://huggingface.co/docs/transformers/en/llm_optims
-            try:
-                compile_start = time.time()
-
-                # Enable static KV cache - required for torch.compile to work effectively
-                # Without this, dynamic cache prevents CUDA graph capture
-                self.model.generation_config.cache_implementation = "static"
-                print("[SCG_LocalVLM] Enabled static KV cache for torch.compile")
-
-                # Compile the forward pass with reduce-overhead mode (uses CUDA graphs)
-                # This eliminates Python overhead in the decode loop
-                self.model.forward = torch.compile(
-                    self.model.forward,
-                    mode="reduce-overhead",  # Uses CUDA graphs to minimize Python overhead
-                    fullgraph=True,  # Compile entire graph for maximum optimization
-                )
-
-                compile_time = time.time() - compile_start
-                print(f"[SCG_LocalVLM] torch.compile setup completed in {compile_time:.2f}s")
-                print("[SCG_LocalVLM] Note: First inference will trigger compilation (may take 30-60s)")
-            except Exception as e:
-                print(f"[SCG_LocalVLM] torch.compile not available or failed: {e}")
-                print("[SCG_LocalVLM] Continuing without compilation (slower decode)")
+            # NOTE: torch.compile is NOT compatible with Qwen VL models
+            # The image encoder has dynamic operations that break torch.export/compile
+            # See: https://github.com/vllm-project/vllm/issues/16320
+            # For faster inference, use vLLM/SGLang instead of HuggingFace transformers
 
             # Save to class-level cache for instance persistence
             self._save_to_cache()
