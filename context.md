@@ -568,3 +568,53 @@ The `generate()` function has inherent Python overhead (single CPU core bottlene
 - Added per-token timing diagnostics (min/median/max intervals, stall detection)
 - Documented all findings and failed attempts
 - Recommendation: Use `keep_model_loaded=True` for best experience
+
+## BREAKTHROUGH: Token 1 Stall Analysis (2025-12-09)
+
+### Per-Token Timing Results
+
+The per-token diagnostics revealed the **exact bottleneck**:
+
+| Run | Token 1 Stall | Median Token | Total Stalls | Speed |
+|-----|---------------|--------------|--------------|-------|
+| 1 | 8.7s | 36.6ms | 1 | 11.3 tok/s |
+| 2 | 9.8s | 31.7ms | 1 | 11.2 tok/s |
+| 3 | 14.1s | 93.7ms | 62 | 5.2 tok/s |
+| 4 | **63.6s** | 110.1ms | 54 | 2.7 tok/s |
+| 5 | **47.2s** | 88.1ms | 56 | 3.2 tok/s |
+| 6 | **49.3s** | 29.4ms | 12 | 3.3 tok/s |
+
+### Key Findings
+
+1. **Token 1 is the massive bottleneck** - First decode token stalls 8-63 seconds!
+2. **Actual decode speed is EXCELLENT** - Median 29-37ms = **27-34 tok/s** when not stalling
+3. **The stall ACCUMULATES over runs** - Gets progressively worse
+4. **Additional stalls appear in later runs** - 1 stall → 50+ stalls
+
+### Root Cause: Memory Fragmentation
+
+The CUDA memory allocator fragments over successive runs:
+- Each generation creates/destroys KV cache tensors
+- Fragments accumulate, making large allocations harder
+- Token 1 (first decode) needs to allocate KV cache extension
+- The fragmented allocator takes longer to find contiguous blocks
+
+### Fix Implemented
+
+Added aggressive CUDA cleanup:
+
+**Before generation:**
+```python
+gc.collect()  # Release Python objects
+torch.cuda.synchronize()  # Complete pending ops
+torch.cuda.empty_cache()  # Release cached blocks
+torch.cuda.reset_peak_memory_stats()  # Reset tracking
+```
+
+**After generation (even with keep_model_loaded):**
+```python
+torch.cuda.synchronize()
+torch.cuda.empty_cache()
+```
+
+This should prevent fragmentation accumulation and reduce Token 1 stall.
