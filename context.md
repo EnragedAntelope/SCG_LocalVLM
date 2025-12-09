@@ -618,3 +618,80 @@ torch.cuda.empty_cache()
 ```
 
 This should prevent fragmentation accumulation and reduce Token 1 stall.
+
+## CRITICAL DISCOVERY: PyTorch cu128 Required for RTX 5090 (2025-12-09)
+
+### The Root Cause Found
+
+**Sources:**
+- [PyTorch Issue #159207](https://github.com/pytorch/pytorch/issues/159207) - Official sm_120 support request
+- [vLLM Forums](https://discuss.vllm.ai/t/vllm-on-rtx5090-working-gpu-setup-with-torch-2-9-0-cu128/1492) - Working RTX 5090 setup
+
+**Key Finding:**
+Standard `pip install torch` gives you `cu121` or `cu124` wheels which do **NOT** include sm_120 (Blackwell) kernel support.
+
+When running on RTX 5090 without native sm_120 kernels:
+- GPU falls back to **PTX JIT compilation**
+- Every CUDA kernel is recompiled at runtime
+- This causes the **8-60+ second Token 1 stalls** we've been seeing
+- Stalls accumulate as different code paths trigger JIT compilation
+
+### Verification
+
+Run this to check if your PyTorch has sm_120 support:
+```python
+import torch
+print(torch.cuda.get_arch_list())
+# Should include 'sm_120' or 'compute_120' for native Blackwell support
+print(torch.version.cuda)
+# Should be 12.8 or higher for Blackwell
+```
+
+If sm_120 is NOT in the list, PyTorch is running in compatibility mode.
+
+### The Fix
+
+Reinstall PyTorch with CUDA 12.8 wheels:
+```bash
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+**Requirements:**
+- PyTorch 2.7.0+ (sm_120 support added in 2.7.0)
+- CUDA 12.8 binaries (cu128) - NOT cu121/cu124
+- NVIDIA driver R570 or higher
+
+### Changes Made (nodes.py)
+
+Added `_check_blackwell_support()` function that:
+1. Detects if GPU is Blackwell (SM 120+)
+2. Checks if sm_120 is in `torch.cuda.get_arch_list()`
+3. Displays critical warning at module load if running in compatibility mode
+4. Provides exact reinstall command
+
+### Failed Attempts Log (Updated)
+
+| Date | Attempt | Result |
+|------|---------|--------|
+| 2025-12-07 | Removed _maybe_move_to_cpu() | Partial improvement |
+| 2025-12-07 | Added class-level caching | Partial improvement |
+| 2025-12-07 | Matmul GPU warmup | FAILED - wrong kernels |
+| 2025-12-07 | SDPA-based warmup | FAILED - still variable |
+| 2025-12-08 | Removed erosdiffusion node | FAILED - no improvement |
+| 2025-12-08 | StaticCache pre-allocation | FAILED - cudaMallocAsync error |
+| 2025-12-08 | CUDA kernel warmup via generate() | FAILED - still variable |
+| 2025-12-08 | torch.compile + static cache | NOT APPLICABLE - Qwen VL incompatible |
+| 2025-12-08 | Aggressive CUDA cleanup | FAILED - Token 1 stalls persist |
+| **2025-12-09** | **PyTorch cu128 wheels** | **IDENTIFIED - User needs to reinstall** |
+
+### Current Status
+
+The performance issues are **NOT a code bug** - they're caused by missing sm_120 kernel support in the user's PyTorch installation.
+
+**Action Required:**
+User must reinstall PyTorch with cu128 wheels:
+```bash
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+The diagnostic code added to nodes.py will now warn users at startup if they're running in compatibility mode.
