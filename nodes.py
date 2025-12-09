@@ -915,6 +915,14 @@ class QwenVL:
                     if math_enabled and not flash_enabled and not mem_eff_enabled:
                         print(f"[SCG_LocalVLM]   WARNING: Only math SDP available - this is slow!")
 
+                    # CRITICAL: Aggressive cleanup before generation to reduce Token 1 stall
+                    # Research shows memory fragmentation accumulates over runs
+                    # This helps the CUDA allocator find contiguous blocks for KV cache
+                    gc.collect()  # Release Python objects first
+                    torch.cuda.synchronize()  # Complete any pending CUDA operations
+                    torch.cuda.empty_cache()  # Release cached memory blocks
+                    torch.cuda.reset_peak_memory_stats()  # Reset fragmentation tracking
+
                 # Create timing streamer to measure prefill vs decode
                 gen_start = time.time()
                 timing_streamer = TimingStreamer(gen_start)
@@ -1009,6 +1017,12 @@ class QwenVL:
                 print(f"[SCG_LocalVLM] Error during inference:\n{error_details}")
                 return (f"[SCG_LocalVLM] Error during model inference: {str(e)}",)
             finally:
+                # Always do light cleanup to prevent memory fragmentation accumulation
+                # This is critical even when keeping model loaded
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+
                 if not keep_model_loaded:
                     self._unload_resources()
                 if processed_video_path:
