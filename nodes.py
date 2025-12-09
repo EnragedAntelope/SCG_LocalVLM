@@ -45,35 +45,89 @@ def _check_quantization_support():
 
 def _get_gpu_info():
     """Get GPU compute capability and check Flash Attention 2 optimization status.
-    
+
     Returns info about whether FA2 is likely OPTIMAL for this GPU (hint, not blocker).
     FA2 may still work on newer GPUs even if not fully optimized yet.
     """
     if not torch.cuda.is_available():
         return None, None, True  # Assume compatible if we can't check
-    
+
     try:
         device = torch.device("cuda:0")
         props = torch.cuda.get_device_properties(device)
         major, minor = props.major, props.minor
         compute_cap = f"{major}.{minor}"
         gpu_name = props.name
-        
+
         # FA2 is optimized for SM 80-90 (Ampere, Ada, Hopper)
         # Newer architectures (SM 120+ Blackwell) may not have optimized kernels yet
         # But this could change with future FA2 updates
         sm_version = major * 10 + minor
         fa2_optimized = 80 <= sm_version <= 90
-        
+
         return gpu_name, compute_cap, fa2_optimized
     except Exception:
         return None, None, True  # Assume compatible if we can't check
 
 
+def _check_blackwell_support():
+    """Check if PyTorch has native support for Blackwell (sm_120) GPUs.
+
+    RTX 5090/5080/5070 use SM 120 architecture. Standard pip install gives cu121/cu124
+    which do NOT include sm_120 kernels - the GPU runs in PTX JIT mode with massive
+    performance penalties (8-60+ second stalls on first token).
+
+    Solution: Install PyTorch with cu128 wheels:
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+    """
+    if not torch.cuda.is_available():
+        return True, None, None  # Can't check
+
+    try:
+        device = torch.device("cuda:0")
+        props = torch.cuda.get_device_properties(device)
+        sm_version = props.major * 10 + props.minor
+
+        # Only check for Blackwell (SM 120+)
+        if sm_version < 120:
+            return True, None, None  # Not Blackwell, no issue
+
+        # Check PyTorch's supported architectures
+        arch_list = torch.cuda.get_arch_list()
+        has_sm_120 = any('sm_120' in arch or 'compute_120' in arch for arch in arch_list)
+
+        # Get PyTorch CUDA version
+        cuda_version = torch.version.cuda if hasattr(torch.version, 'cuda') else "unknown"
+
+        return has_sm_120, arch_list, cuda_version
+    except Exception:
+        return True, None, None  # Can't check
+
+
 # Get GPU info at module load time
 _GPU_NAME, _GPU_COMPUTE_CAP, _FA2_OPTIMIZED = _get_gpu_info()
+_BLACKWELL_SUPPORTED, _ARCH_LIST, _CUDA_VERSION = _check_blackwell_support()
+
 if _GPU_NAME:
     print(f"[SCG_LocalVLM] GPU: {_GPU_NAME} (SM {_GPU_COMPUTE_CAP})")
+    print(f"[SCG_LocalVLM] PyTorch CUDA: {_CUDA_VERSION}")
+    if _ARCH_LIST:
+        print(f"[SCG_LocalVLM] Supported architectures: {_ARCH_LIST}")
+
+    # Critical warning for Blackwell GPUs without native support
+    if _BLACKWELL_SUPPORTED is False:
+        print("\n" + "=" * 80)
+        print("[SCG_LocalVLM] ⚠️  CRITICAL: RTX 5090 RUNNING IN COMPATIBILITY MODE!")
+        print("=" * 80)
+        print("[SCG_LocalVLM] Your PyTorch does NOT have native sm_120 (Blackwell) support.")
+        print("[SCG_LocalVLM] This causes 8-60+ second stalls on Token 1 due to PTX JIT compilation.")
+        print("[SCG_LocalVLM]")
+        print("[SCG_LocalVLM] To fix: Reinstall PyTorch with CUDA 12.8 wheels:")
+        print("[SCG_LocalVLM]   pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128")
+        print("[SCG_LocalVLM]")
+        print(f"[SCG_LocalVLM] Current CUDA version: {_CUDA_VERSION}")
+        print(f"[SCG_LocalVLM] Required: cu128 or cu129")
+        print("=" * 80 + "\n")
 
 
 class TimingStreamer:
