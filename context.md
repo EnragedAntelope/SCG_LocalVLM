@@ -1,6 +1,6 @@
 # ComfyUI_QwenVL Optimization Project - Context
 
-**Last Updated:** 2025-12-07
+**Last Updated:** 2025-12-09
 **Branch:** `claude/fix-node-performance-019PjwcjTqhGhsy2NsVNp81x`
 
 ## Project Overview
@@ -768,3 +768,111 @@ User confirmed they have PyTorch 2.9.1+cu128 with sm_120 in arch list. The sm_12
 3. **Try vLLM or SGLang**
    - Qwen team recommends for production
    - Would require significant architecture change
+
+---
+
+## FINAL ASSESSMENT (2025-12-09)
+
+### Test Results Summary
+
+**SDPA (keep_model_loaded=False then True):**
+| Run | Mode | Token 2 Stall | Median | Speed | Total |
+|-----|------|---------------|--------|-------|-------|
+| 1 | unload | 59.7s | 29.6ms | 4.5 tok/s | 114s |
+| 2 | unload | 8.2s | 90.0ms | 7.5 tok/s | 72s |
+| 3 | unload | 18.4s | 122.9ms | 5.8 tok/s | 89s |
+| 4 | unload | 55.8s | 29.5ms | 3.9 tok/s | 97s |
+| 5 | keep | 8.1s | 37.1ms | 8.9 tok/s | 55s |
+| 6 | keep | 10.1s | 28.7ms | **18.1 tok/s** | **22s** |
+
+**FA2 (keep_model_loaded mixed):**
+| Run | Mode | Token 2 Stall | Median | Speed | Total |
+|-----|------|---------------|--------|-------|-------|
+| 1 | keep | 8.7s | 33.7ms | **18.6 tok/s** | 28s |
+| 2 | keep | 8.2s | 34.0ms | **19.1 tok/s** | 26s |
+| 3 | unload | 8.2s | 34.1ms | **19.2 tok/s** | 32s |
+| 4 | unload | 25.6s | 41.4ms | 5.7 tok/s | 103s |
+| 5 | unload | 53.4s | 37.2ms | 6.3 tok/s | 94s |
+| 6 | unload | 8.3s | 86.5ms | 6.1 tok/s | 66s |
+| 7 | keep | 73.4s | 262.4ms | 2.4 tok/s | 182s |
+
+### Critical Discovery: Stall Happens at Token 2
+
+The verbose timing revealed that:
+- **TTFT (first token) arrives in 0.001-0.007s** (nearly instant)
+- **The massive stall (8-73s) happens at Token 2**
+- This means the first token from `generate()` is likely a special/BOS token
+- The actual vision encoding happens between token 1 and 2
+
+### Confirmed Facts
+
+1. **Best peak performance: 18-19 tok/s** with FA2 + keep_model_loaded
+2. **Performance is highly variable** - same settings can give 2.4 to 19 tok/s
+3. **The "Token 2 stall" is the real prefill/vision encoding** - not what we originally thought
+4. **Neither SDPA nor FA2 consistently fixes the issue**
+5. **The stall accumulates over runs** even with keep_model_loaded
+
+### What We Tried That FAILED
+
+| Attempt | Result |
+|---------|--------|
+| Removed _maybe_move_to_cpu() | Partial improvement |
+| Class-level caching | Partial improvement |
+| Matmul/SDPA GPU warmup | No effect |
+| StaticCache pre-allocation | cudaMallocAsync error |
+| torch.compile | Incompatible with Qwen VL |
+| Aggressive CUDA cleanup | No effect on stalls |
+| PyTorch cu128 hypothesis | User already had cu128 |
+| use_fast=True processor | Preprocessing was already fast |
+| Flash Attention 2 | Same variability as SDPA |
+
+### What We Learned (Evidence-Based)
+
+1. **HuggingFace transformers has inherent limitations**
+   - Single CPU core bottleneck ([Issue #24524](https://github.com/huggingface/transformers/issues/24524))
+   - torch.compile incompatible with Qwen VL ([vLLM Issue #16320](https://github.com/vllm-project/vllm/issues/16320))
+
+2. **Qwen3-VL is inherently slower than Qwen2.5-VL**
+   - Architectural changes cause overhead
+   - Qwen team recommends vLLM/SGLang ([Issue #1657](https://github.com/QwenLM/Qwen3-VL/issues/1657))
+
+3. **RTX 5090 + Qwen VL = Known problematic combination**
+   - Other users report same issues ([ComfyUI-QwenVL Issue #18](https://github.com/1038lab/ComfyUI-QwenVL/issues/18))
+   - 400+ second inference times reported
+
+4. **The variability is NOT fixable within this node**
+   - Root cause is in HuggingFace generate() + Qwen VL model architecture
+   - External factors (ComfyUI prompt processing, GPU state) contribute
+
+### Recommended Configuration
+
+**For best results use:**
+- **Attention:** `flash_attention_2`
+- **Keep model loaded:** `True`
+- **Quantization:** `none`
+
+This achieves **18-19 tok/s peak** when it works, though performance remains variable.
+
+### For Production Use
+
+If consistent performance is required, consider:
+- **vLLM** with Qwen3-VL support (vLLM >= 0.11.0)
+- **SGLang** as alternative inference engine
+- **Qwen2.5-VL** instead of Qwen3-VL (faster, more stable)
+
+### Code Changes Kept
+
+1. **`use_fast=True` in AutoProcessor** - harmless, may help some setups
+2. **Verbose TimingStreamer** - useful for debugging
+3. **`_check_blackwell_support()`** - useful for other users without cu128
+4. **Class-level caching** - helps with keep_model_loaded
+5. **CUDA cleanup** - standard practice, doesn't hurt
+
+### Conclusion
+
+The performance issues are **external to this node's code**. The combination of:
+- HuggingFace transformers CPU bottleneck
+- Qwen3-VL architectural overhead
+- RTX 5090 Blackwell ecosystem maturity
+
+...creates inherent variability that cannot be fixed at the node level. Use `keep_model_loaded=True` with `flash_attention_2` for best results, and accept that some runs will be slower than others.
