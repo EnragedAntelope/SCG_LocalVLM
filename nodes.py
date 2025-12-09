@@ -133,18 +133,29 @@ if _GPU_NAME:
 class TimingStreamer:
     """Streamer that records per-token generation times to identify bottlenecks."""
 
-    def __init__(self, gen_start_time):
+    def __init__(self, gen_start_time, verbose=False):
         self.gen_start_time = gen_start_time  # Set externally before generate()
         self.first_token_time = None
         self.last_token_time = None
         self.token_count = 0
         self.token_times = []  # Per-token timestamps for stall analysis
+        self.verbose = verbose
 
     def put(self, value):
         """Called when a token is generated."""
         now = time.time()
+        elapsed = now - self.gen_start_time
+
         if self.first_token_time is None:
             self.first_token_time = now
+            if self.verbose:
+                print(f"[SCG_LocalVLM] TTFT: {elapsed:.3f}s (first token arrived)")
+        else:
+            # Check for stalls (>1s between tokens)
+            last_interval = now - self.last_token_time
+            if last_interval > 1.0 and self.verbose:
+                print(f"[SCG_LocalVLM] STALL at token {self.token_count + 1}: {last_interval:.2f}s (total elapsed: {elapsed:.1f}s)")
+
         self.token_times.append(now)
         self.last_token_time = now
         self.token_count += 1
@@ -602,13 +613,19 @@ class QwenVL:
             # Images will be resized to maintain their aspect ratio
             # within the range of min_pixels and max_pixels.
             min_pixels = 256*28*28
-            max_pixels = 1024*28*28 
+            max_pixels = 1024*28*28
 
+            # Use fast image processor for significant speedup on GPU
+            # The fast processor uses torchvision instead of PIL, enabling GPU acceleration
+            # See: https://github.com/vllm-project/vllm/issues/15869
+            # Note: use_fast=True is now default in transformers 4.48+, but we set it explicitly
             self.processor = AutoProcessor.from_pretrained(
                 self.model_checkpoint,
                 min_pixels=min_pixels,
                 max_pixels=max_pixels,
+                use_fast=True,  # GPU-accelerated image processing
             )
+            print(f"[SCG_LocalVLM] Processor loaded (use_fast=True)")
 
         if self.model is None:
             load_start = time.time()
@@ -978,8 +995,9 @@ class QwenVL:
                     torch.cuda.reset_peak_memory_stats()  # Reset fragmentation tracking
 
                 # Create timing streamer to measure prefill vs decode
+                # Enable verbose mode to see real-time stall detection
                 gen_start = time.time()
-                timing_streamer = TimingStreamer(gen_start)
+                timing_streamer = TimingStreamer(gen_start, verbose=True)
                 generation_kwargs["streamer"] = timing_streamer
 
                 generated_ids = self.model.generate(**inputs, **generation_kwargs)

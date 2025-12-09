@@ -695,3 +695,76 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 ```
 
 The diagnostic code added to nodes.py will now warn users at startup if they're running in compatibility mode.
+
+## CORRECTION: User has cu128 installed (2025-12-09)
+
+User confirmed they have PyTorch 2.9.1+cu128 with sm_120 in arch list. The sm_120 hypothesis was **WRONG**.
+
+## Further Research: Multiple Known Issues (2025-12-09)
+
+**Research Sources:**
+- [ComfyUI-QwenVL Issue #18](https://github.com/1038lab/ComfyUI-QwenVL/issues/18) - Same problem on RTX 5090
+- [vLLM Issue #15869](https://github.com/vllm-project/vllm/issues/15869) - HuggingFace processor is "really slow"
+- [Qwen3-VL Issue #1678](https://github.com/QwenLM/Qwen3-VL/issues/1678) - Single-threaded image resize bottleneck
+- [vLLM RTX 5090 Guide](https://github.com/vllm-project/vllm/issues/14452) - Flash Attention 3 doesn't work on Blackwell
+- [HuggingFace Fast Image Processors](https://huggingface.co/docs/transformers/en/main_classes/image_processor)
+
+**Key Findings:**
+
+1. **HuggingFace image processor is known slow**
+   - `Qwen2VLImageProcessor` uses PIL which is single-threaded
+   - Solution: Use `Qwen2VLImageProcessorFast` via `use_fast=True` in AutoProcessor
+   - Fast processor uses torchvision for GPU-accelerated processing
+
+2. **qwen_vl_utils has single-threaded resize bottleneck**
+   - Source: [Issue #1678](https://github.com/QwenLM/Qwen3-VL/issues/1678)
+   - PIL resize is CPU-bound, single-threaded
+   - Solutions: Pillow-SIMD (2-4x speedup) or OpenCV
+
+3. **Flash Attention 3 doesn't work on Blackwell**
+   - Source: [vLLM Issue #14452](https://github.com/vllm-project/vllm/issues/14452)
+   - Workaround: Use `VLLM_FLASH_ATTN_VERSION=2`
+   - User has flash_attn 2.8.3 but is using SDPA
+
+4. **ComfyUI-QwenVL Issue #18 - Same hardware, same problem**
+   - Users seeing 400+ second inference on RTX 5090
+   - Suggested fixes: device_map="auto", install Flash Attention 2
+   - Version 1.1.0 had some improvements
+
+5. **Timing Analysis Discrepancy**
+   - Prefill shows 0.00s but Token 1 stall is 65s
+   - This suggests stall happens BETWEEN first and second token, not during prefill
+   - Possibly: vision encoder runs lazily on first decode, not during prefill
+
+### Changes Made (2025-12-09)
+
+1. **Added `use_fast=True` to AutoProcessor**
+   - Should enable GPU-accelerated image processing
+   - Uses torchvision instead of PIL
+
+2. **Added verbose timing to TimingStreamer**
+   - Real-time TTFT and stall detection printed during generation
+   - Will help identify exactly when stalls occur
+
+3. **Updated sm_120 diagnostic**
+   - Still useful for other users who may not have proper setup
+
+### Remaining Hypotheses
+
+1. **Vision encoder lazy evaluation** - Image encoding might happen on first forward pass
+2. **SDPA on Blackwell** - Might not be optimal, try Flash Attention 2
+3. **CUDA kernel compilation** - First forward pass might trigger JIT compilation
+4. **Model.generate() inherent issues** - HuggingFace transformers has known CPU bottleneck
+
+### Next Steps to Try
+
+1. **Switch attention to Flash Attention 2**
+   - User has flash_attn installed but uses SDPA
+   - Change default or try explicitly
+
+2. **Profile vision encoder**
+   - Add hooks to measure ViT forward pass separately
+
+3. **Try vLLM or SGLang**
+   - Qwen team recommends for production
+   - Would require significant architecture change
